@@ -1,7 +1,7 @@
 //! Copy, cut and paste frames (Edit › Timeline).
 //!
 //! Design notes (principal engineer / senior designer review):
-//! * Frames have their own clipboard, separate from copied artwork, as in Animate: copying
+//! * Frames have their own clipboard, separate from copied artwork: copying
 //!   frames never replaces copied shapes, and the reverse.
 //! * A copy is cut exactly at the selection edges by splitting a scratch copy of the layer with
 //!   the same keyframe logic as F6, so a span that starts before the selection, or is
@@ -145,7 +145,7 @@ fn paste_frames(s: &mut Session, p: &Value) -> Result<Value> {
                 // The pasted keys are its frames (no stray blank frame at 1).
                 l.keyframes.clear();
             }
-            crate::editing::edited_mut(&mut s.doc, s.scene, &s.editing).layers.push(Arc::new(l));
+            crate::editing::edited_mut(&mut s.doc, s.scene, &s.editing)?.layers.push(Arc::new(l));
         }
         let mut keys = Vec::with_capacity(sl.keys.len());
         for k in &sl.keys {
@@ -161,7 +161,7 @@ fn paste_frames(s: &mut Session, p: &Value) -> Result<Value> {
             }
             keys.push(Arc::new(k));
         }
-        let Some(layer) = crate::editing::edited_mut(&mut s.doc, s.scene, &s.editing).layers.get_mut(row).map(Arc::make_mut) else { continue };
+        let Some(layer) = crate::editing::edited_mut(&mut s.doc, s.scene, &s.editing).ok().and_then(|tl| tl.layers.get_mut(row).map(Arc::make_mut)) else { continue };
         crate::cmds_camera::keys_fit(layer.kind, keys.iter().map(|k| &**k))?;
         if layer.keyframe_index_at(frame).is_some() {
             insert_keyframe_at(layer, frame, true)?;

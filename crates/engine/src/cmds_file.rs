@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 pub fn specs() -> Vec<CommandSpec> {
-    vec![
+    let mut v = vec![
         CommandSpec { id: "file.new", label: "New", menu: "File", shortcut: Some("Ctrl+N"), params: "{width?, height?, fps?}", mutates: false, run: new_doc },
         CommandSpec { id: "file.new_sample", label: "New from Sample", menu: "File", shortcut: None, params: "{which?: demo (default) | interactive (a menu with a Play button, for Test Movie)}", mutates: false, run: new_sample },
         CommandSpec { id: "file.open", label: "Open…", menu: "File", shortcut: Some("Ctrl+O"), params: "{path, unsaved? (opens it as unsaved work: a restored copy), untitled? (with no file name, so Save asks for one)}", mutates: false, run: open },
@@ -75,6 +75,24 @@ pub fn specs() -> Vec<CommandSpec> {
             run: export_gif,
         },
         CommandSpec {
+            id: "file.export_apng",
+            label: "Export Animated PNG…",
+            menu: "File/Export",
+            shortcut: None,
+            params: "{path (.png or .apng), from?, to? (movie frames: every scene in order), scale?, loop? (true (default): forever; false: once; or how many times it plays), background? (default false: transparent), confirm?}",
+            mutates: false,
+            run: |s, p| crate::anim::export(s, p, crate::anim::Kind::Apng),
+        },
+        CommandSpec {
+            id: "file.export_webp",
+            label: "Export Animated WebP…",
+            menu: "File/Export",
+            shortcut: None,
+            params: "{path (.webp; lossless), from?, to? (movie frames: every scene in order), scale?, loop? (true (default): forever; false: once; or how many times it plays), background? (default false: transparent), confirm?}",
+            mutates: false,
+            run: |s, p| crate::anim::export(s, p, crate::anim::Kind::Webp),
+        },
+        CommandSpec {
             id: "file.export_lottie",
             label: "Export Lottie Animation…",
             menu: "File/Export",
@@ -104,7 +122,19 @@ pub fn specs() -> Vec<CommandSpec> {
             run: set_stage,
         },
         CommandSpec { id: "doc.info", label: "Document Info", menu: "", shortcut: None, params: "{}", mutates: false, run: |s, _| Ok(s.info()) },
-    ]
+    ];
+    // In the File menu as in Animate: New from Template under New, Save as Template under
+    // Save As (ADR 0065).
+    for t in crate::cmds_template::specs() {
+        let after = match t.id {
+            "file.new_from_template" => "file.new_sample",
+            "file.save_as_template" => "file.save_as",
+            _ => "doc.info",
+        };
+        let at = v.iter().position(|c| c.id == after).map_or(v.len(), |i| i + 1);
+        v.insert(at, t);
+    }
+    v
 }
 
 fn stage_edge(p: &Value, key: &str, default: u32) -> Result<u32> {
@@ -182,6 +212,8 @@ pub(crate) fn open(s: &mut Session, p: &Value) -> Result<Value> {
         info["kept"] = json!(report.kept);
         info["runs"] = json!(report.runs);
         info["missing_fonts"] = json!(report.missing_fonts);
+        // The sounds and videos that didn't come across, by name and why (ADR 0086).
+        info["named"] = json!(report.names);
         info["merged_keyframes"] = json!(merged);
         return Ok(info);
     }
@@ -207,7 +239,7 @@ fn save(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"saved": path.display().to_string()}))
 }
 
-fn scale_param(p: &Value) -> Result<f32> {
+pub(crate) fn scale_param(p: &Value) -> Result<f32> {
     match opt_f32(p, "scale")? {
         None => Ok(1.0),
         Some(v) if v > 0.0 && v <= 8.0 => Ok(v),
@@ -354,6 +386,7 @@ pub(crate) fn import_to_stage(s: &mut Session, p: &Value) -> Result<Value> {
                 let mut ml = new_layer(s, label, anicraft_doc::LayerKind::Mask, Some(fid));
                 // Mask layers are locked, as Animate keeps them: the mask shows, its edge hides.
                 ml.locked = true;
+                ml.mask_mode = mask.mode;
                 ml.keyframes = keys(elements(s, mask.elements));
                 inside = Some(ml.id);
                 stack.push(ml);
@@ -366,7 +399,7 @@ pub(crate) fn import_to_stage(s: &mut Session, p: &Value) -> Result<Value> {
             cl.keyframes = keys(els);
             stack.push(cl);
         }
-        let tl = crate::editing::edited_mut(&mut s.doc, s.scene, &s.editing);
+        let tl = crate::editing::edited_mut(&mut s.doc, s.scene, &s.editing)?;
         for (k, l) in stack.into_iter().enumerate() {
             tl.layers.insert((at + k).min(tl.layers.len()), Arc::new(l));
         }
@@ -392,6 +425,74 @@ pub(crate) fn import_to_stage(s: &mut Session, p: &Value) -> Result<Value> {
     }))
 }
 
+/// An SVG drawing read from `path` (size-checked), with at least one shape.
+pub(crate) fn read_svg(path: &std::path::Path) -> Result<anicraft_svg::SvgImport> {
+    if crate::vfs::len(path)? > MAX_IMPORT_BYTES {
+        return Err(EngineError::Format(format!("{} is too large to import", path.display())));
+    }
+    let drawing = anicraft_svg::import(&crate::vfs::read(path)?).map_err(|e| EngineError::Format(format!("{}: {e}", path.display())))?;
+    if drawing.is_empty() {
+        return Err(EngineError::State(format!("{} has no shapes AniCraft can import yet. {}", path.display(), drawing.report.summary())));
+    }
+    Ok(drawing)
+}
+
+/// Whether a drawing fits on one layer (one run of artwork, nothing masked).
+pub(crate) fn one_layer(d: &anicraft_svg::SvgImport) -> bool {
+    d.layers.len() == 1 && d.layers.iter().all(|l| l.mask.is_none())
+}
+
+/// Import to Library with an SVG (ADR 0065): a graphic symbol named after the file (a free
+/// name at the Library's top level) holding the drawing's shapes, its registration point at
+/// the drawing's centre. Clips and masks keep their mask layers inside the symbol.
+pub(crate) fn import_svg_symbol(s: &mut Session, path: &std::path::Path, name: Option<&str>) -> Result<Value> {
+    use anicraft_doc::{Layer, LayerId, LayerKind, Symbol, SymbolId, SymbolKind, Timeline};
+    let drawing = read_svg(path)?;
+    let stem: String = path.file_stem().map_or_else(|| "Drawing".into(), |n| n.to_string_lossy().chars().take(128).collect());
+    let name = s.doc.unique_name(None, name.map_or(stem.as_str(), str::trim));
+    let place = anicraft_geom::Affine::translate(-drawing.width * 0.5, -drawing.height * 0.5);
+    let elements = |s: &mut Session, list: Vec<anicraft_svg::ImportedElement>| -> Vec<Arc<anicraft_doc::Element>> {
+        list.into_iter()
+            .map(|e| Arc::new(anicraft_doc::Element { id: anicraft_doc::ElementId(s.doc.alloc_id()), name: e.name, transform: place.mul(&e.transform), color: anicraft_doc::ColorEffect::opacity(e.alpha), kind: e.kind }))
+            .collect()
+    };
+    let one_key = |els: Vec<Arc<anicraft_doc::Element>>| {
+        let mut k = anicraft_doc::Keyframe::new(0, 1);
+        k.elements = els;
+        vec![Arc::new(k)]
+    };
+    let count = drawing.elements().count();
+    let (width, height, report) = (drawing.width, drawing.height, drawing.report);
+    let runs = drawing.layers.len();
+    // Top first: the drawing lists its runs in paint order (bottom first).
+    let mut layers: Vec<Arc<Layer>> = Vec::new();
+    for (n, l) in drawing.layers.into_iter().enumerate().rev() {
+        let mut parent = None;
+        if let Some(mask) = l.mask {
+            let mut ml = Layer::new(LayerId(s.doc.alloc_id()), if mask.name.is_empty() { "Mask".to_string() } else { mask.name.clone() });
+            ml.kind = LayerKind::Mask;
+            ml.locked = true;
+            ml.mask_mode = mask.mode;
+            ml.keyframes = one_key(elements(s, mask.elements));
+            parent = Some(ml.id);
+            layers.push(Arc::new(ml));
+        }
+        let mut cl = Layer::new(LayerId(s.doc.alloc_id()), if runs == 1 { "Layer 1".to_string() } else { format!("Layer {}", n + 1) });
+        cl.parent = parent;
+        cl.keyframes = one_key(elements(s, l.elements));
+        layers.push(Arc::new(cl));
+    }
+    let mut timeline = Timeline { layers };
+    timeline.repair_masks();
+    let id = SymbolId(s.doc.alloc_id());
+    s.doc.library.push(Arc::new(Symbol { id, name: name.clone(), kind: SymbolKind::Graphic, linkage: None, scale_grid: None, scale_grid_kept: None, timeline }));
+    Ok(json!({"symbol": id.0, "name": name, "elements": count, "layers": timeline_len(s, id), "width": width, "height": height, "report": report.summary(), "skipped": report.skipped}))
+}
+
+fn timeline_len(s: &Session, id: anicraft_doc::SymbolId) -> usize {
+    s.doc.library.iter().find(|x| x.id == id).map_or(0, |x| x.timeline.layers.len())
+}
+
 /// A PNG or JPEG as a bitmap in the document, and the one shape that shows it: a rectangle of
 /// the image's size filled with it. JPEGs are kept as PNG (lossless, so nothing degrades).
 fn import_image(s: &mut Session, path: &std::path::Path, bytes: Vec<u8>) -> Result<anicraft_svg::SvgImport> {
@@ -406,6 +507,7 @@ fn import_image(s: &mut Session, path: &std::path::Path, bytes: Vec<u8>) -> Resu
         stroke: None,
         fill_rule: anicraft_geom::FillRule::NonZero,
         merge: false,
+        warp: None,
     };
     Ok(anicraft_svg::SvgImport::single(w, h, vec![anicraft_svg::ImportedElement { name, transform: anicraft_geom::Affine::IDENTITY, alpha: 1.0, kind: anicraft_doc::ElementKind::Shape(shape) }]))
 }
@@ -690,7 +792,8 @@ pub fn gif_delays(frames: usize, fps: f32) -> Vec<u16> {
         .collect()
 }
 
-/// The movie as a Lottie (JSON) animation, frame-accurate (see `anicraft_render::lottie`).
+/// The movie as a Lottie (JSON) animation, keyed with eases and equal to `evaluate` at every
+/// frame (see `anicraft_render::lottie`, ADR 0089).
 fn export_lottie(s: &mut Session, p: &Value) -> Result<Value> {
     let path = PathBuf::from(str_req(p, "path")?);
     let last = s.doc.frame_count().saturating_sub(1);
@@ -771,26 +874,25 @@ fn export_gif(s: &mut Session, p: &Value) -> Result<Value> {
     let doc = &s.doc;
     let job = s.job.as_deref();
     let delays = gif_delays(n as usize, doc.stage.fps);
-    let frames: Vec<gif::Frame<'static>> = (from..to.saturating_add(1))
+    let frames: Vec<(craft_gif::write::PreparedFrame, u16)> = (from..to.saturating_add(1))
         .into_par_iter()
         .zip(delays.into_par_iter())
         .map(|(f, delay)| {
             let (pm, _) = render(&anicraft_doc::evaluate(doc, f), &view)?;
-            let mut rgba = pm.to_rgba8();
-            let mut frame = gif::Frame::from_rgba_speed(w, h, &mut rgba, 10);
-            frame.delay = delay;
+            let rgba = pm.to_rgba8();
+            let frame = craft_gif::write::prepare_frame(u32::from(w), u32::from(h), rgba, 10)
+                .map_err(|e| EngineError::Format(e.to_string()))?;
             crate::publish::tick(job, 1)?;
-            Ok(frame)
+            Ok((frame, delay))
         })
         .collect::<Result<Vec<_>>>()?;
     let mut bytes = Vec::new();
     {
-        let mut enc = gif::Encoder::new(&mut bytes, w, h, &[]).map_err(|e| EngineError::Format(e.to_string()))?;
-        if looping {
-            enc.set_repeat(gif::Repeat::Infinite).map_err(|e| EngineError::Format(e.to_string()))?;
-        }
-        for fr in &frames {
-            enc.write_frame(fr).map_err(|e| EngineError::Format(e.to_string()))?;
+        let opts = craft_gif::write::Options { loop_forever: looping, ..Default::default() };
+        let mut enc = craft_gif::write::AnimationWriter::new(&mut bytes, u32::from(w), u32::from(h), opts)
+            .map_err(|e| EngineError::Format(e.to_string()))?;
+        for (fr, delay) in frames {
+            enc.write_prepared_frame(fr, delay).map_err(|e| EngineError::Format(e.to_string()))?;
         }
     }
     crate::vfs::write(&path, &bytes)?;

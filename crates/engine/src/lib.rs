@@ -5,25 +5,37 @@
 //! JSON params, so headless and interactive behaviour cannot drift apart.
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
+mod anim;
 mod cmds_actions;
 mod cmds_bone;
+mod cmds_warp;
 pub mod cmds_brush;
 mod cmds_camera;
 mod cmds_draw;
+pub mod cmds_filter;
+pub mod cmds_ease;
+pub mod cmds_envelope;
 pub mod cmds_drop;
 pub mod cmds_erase;
 mod cmds_file;
 mod cmds_frames;
+mod cmds_group;
 mod cmds_modify;
 mod cmds_motion;
+mod cmds_retime;
 mod cmds_hints;
+mod cmds_layer;
 pub mod cmds_library;
-mod cmds_paint;
+pub mod cmds_paint;
 mod cmds_path;
 pub mod cmds_raw;
 pub mod cmds_rawsub;
 mod cmds_rawpoints;
+pub mod brush_library;
+pub mod filter_library;
 pub mod cmds_recent;
+pub mod cmds_desktop;
+pub mod cmds_template;
 mod cmds_recovery;
 mod cmds_script;
 pub mod cmds_plugin;
@@ -31,8 +43,10 @@ mod cmds_scene;
 pub mod cmds_sound;
 pub mod cmds_text;
 mod cmds_timeline;
+mod cmds_view;
 mod cmds_width;
 mod cmds_stroke;
+pub mod cmds_swatch;
 pub mod confirm;
 pub mod editing;
 pub mod explorer;
@@ -45,13 +59,15 @@ pub mod onion;
 pub mod recovery;
 pub mod render_service;
 pub mod selection;
+pub mod snap;
 pub mod params;
+pub mod plugin_export;
 pub mod player;
 pub mod publish;
 pub mod vfs;
 
 use anicraft_doc::{DisplayList, Document, Element, ElementId, ElementKind, Keyframe, Layer, LayerId, LayerKind, evaluate_layer_elements, evaluate_scene};
-use anicraft_geom::{Rect, Vec2};
+use anicraft_geom::{Affine, Rect, Vec2};
 use serde_json::{Value, json};
 use history::History;
 use std::cell::RefCell;
@@ -63,6 +79,9 @@ pub use anicraft_plugins as plugins;
 pub use anicraft_text as text;
 pub use anicraft_geom as geom;
 pub use anicraft_render as render;
+/// Whether a path is an Animate document (`.fla`, `.xfl`, or an XFL folder) that `file.open`
+/// imports.
+pub use cmds_file::is_animate;
 
 #[derive(Debug, thiserror::Error)]
 pub enum EngineError {
@@ -116,20 +135,29 @@ impl CommandSpec {
 pub fn commands() -> Vec<CommandSpec> {
     let mut v = Vec::new();
     v.extend(cmds_file::specs());
+    v.extend(plugin_export::specs());
+    v.extend(cmds_envelope::specs());
     v.extend(publish::specs());
     v.extend(cmds_recent::specs());
+    v.extend(cmds_desktop::specs());
     v.extend(cmds_drop::specs());
     v.extend(cmds_recovery::specs());
     v.extend(cmds_timeline::specs());
+    v.extend(cmds_layer::specs());
     v.extend(cmds_camera::specs());
     v.extend(cmds_bone::specs());
+    v.extend(cmds_warp::specs());
     v.extend(cmds_motion::specs());
+    v.extend(cmds_retime::specs());
+    v.extend(cmds_ease::specs());
     v.extend(cmds_hints::specs());
     v.extend(cmds_scene::specs());
     v.extend(cmds_frames::specs());
     v.extend(onion::specs());
     v.extend(multi::specs());
     v.extend(cmds_draw::specs());
+    v.extend(cmds_view::specs());
+    v.extend(cmds_group::specs());
     v.extend(cmds_library::specs());
     v.extend(merge::specs());
     v.extend(cmds_modify::specs());
@@ -141,8 +169,10 @@ pub fn commands() -> Vec<CommandSpec> {
     v.extend(find::specs());
     v.extend(explorer::specs());
     v.extend(cmds_brush::specs());
+    v.extend(cmds_filter::specs());
     v.extend(cmds_erase::specs());
     v.extend(cmds_paint::specs());
+    v.extend(cmds_swatch::specs());
     v.extend(cmds_text::specs());
     v.extend(cmds_width::specs());
     v.extend(cmds_stroke::specs());
@@ -170,6 +200,13 @@ pub fn find_command(id: &str) -> Option<CommandSpec> {
 
 pub use history::{Snapshot, StateId};
 pub use selection::Selection;
+pub use snap::{Accuracy, SnapTo, ViewAids};
+pub use cmds_layer::LAYER_COLORS;
+
+/// The command namespaces that change a timeline's layers and frames, refused while a group is
+/// open for editing (ADR 0073): a group is one layer and one frame. A name ending in `.` is a
+/// namespace, any other one command.
+const GROUP_REFUSES: &[&str] = &["timeline.", "layer.", "camera.", "bone.", "motion.", "tween.", "frames.", "sound.place", "script.set", "script.clear"];
 
 /// Last addressable frame (0-based); about 70 minutes at 24 fps.
 pub const MAX_FRAME: u32 = 100_000;
@@ -199,9 +236,13 @@ pub(crate) fn pick_index(dl: &DisplayList, p: Vec2, slop: f32, ok: impl Fn(usize
 #[derive(Clone, Debug)]
 pub struct ToolStyle {
     pub fill: anicraft_doc::Rgba,
-    /// The fill swatch holds a gradient or a bitmap (picked with the Eyedropper, ADR 0034), in
-    /// stage space; `fill` is then its representative colour. `None`: the solid `fill`.
+    /// The fill swatch holds a gradient or a bitmap (set in the Colour panel or picked with the
+    /// Eyedropper, ADR 0034 and 0074), in stage space; `fill` is then its representative colour.
+    /// `None`: the solid `fill`.
     pub fill_paint: Option<anicraft_doc::Paint>,
+    /// Lock Fill (ADR 0074): a gradient or bitmap from the swatch is poured where it lies on the
+    /// stage, so it runs on across shapes. Off, each shape gets it fitted to its own bounds.
+    pub lock_fill: bool,
     pub stroke: anicraft_doc::Rgba,
     pub stroke_width: f32,
     pub use_fill: bool,
@@ -223,7 +264,7 @@ pub struct ToolStyle {
 
 impl Default for ToolStyle {
     fn default() -> Self {
-        ToolStyle { fill: anicraft_doc::Rgba::hex(0x3d8bfd), fill_paint: None, stroke: anicraft_doc::Rgba::hex(0x1b2a4a), stroke_width: 2.0, use_fill: true, use_stroke: true, stroke_profile: anicraft_doc::ProfilePreset::Uniform, custom_profile: None, line: anicraft_doc::StrokeStyle::default(), object_drawing: true, snap_objects: true }
+        ToolStyle { fill: anicraft_doc::Rgba::hex(0x3d8bfd), fill_paint: None, lock_fill: false, stroke: anicraft_doc::Rgba::hex(0x1b2a4a), stroke_width: 2.0, use_fill: true, use_stroke: true, stroke_profile: anicraft_doc::ProfilePreset::Uniform, custom_profile: None, line: anicraft_doc::StrokeStyle::default(), object_drawing: true, snap_objects: true }
     }
 }
 
@@ -231,6 +272,13 @@ impl ToolStyle {
     /// The fill swatch's paint, in stage space.
     pub fn fill_paint(&self) -> anicraft_doc::Paint {
         self.fill_paint.clone().unwrap_or(anicraft_doc::Paint::Solid(self.fill))
+    }
+    /// The fill swatch's paint for a shape whose space is `to_local` from the stage and whose
+    /// outline has the local `bounds`: with Lock Fill, the stage-space paint carried into the
+    /// shape; without, a gradient or bitmap fitted to the bounds (as Animate pours them).
+    pub fn fill_paint_for(&self, to_local: &anicraft_geom::Affine, bounds: &anicraft_geom::Rect) -> anicraft_doc::Paint {
+        let paint = self.fill_paint();
+        if self.lock_fill || matches!(paint, anicraft_doc::Paint::Solid(_)) { paint.transformed(to_local) } else { paint.fitted(bounds) }
     }
     /// Sets the fill swatch to a solid colour (dropping a picked gradient or bitmap).
     pub fn set_fill_color(&mut self, c: anicraft_doc::Rgba) {
@@ -245,10 +293,6 @@ impl ToolStyle {
     pub fn new_stroke(&self, color: anicraft_doc::Rgba, width: f32) -> anicraft_doc::Stroke {
         anicraft_doc::Stroke::new(color, width).with_profile(self.profile()).with_style(self.line.clone())
     }
-    /// The snapping radius a command asked for (`snap`), or none when Snap to Objects is off.
-    pub fn snap_radius(&self, asked: f32) -> f32 {
-        if self.snap_objects { asked } else { 0.0 }
-    }
     /// Sets the profile to a preset (dropping a picked custom one).
     pub fn set_profile(&mut self, p: anicraft_doc::ProfilePreset) {
         self.stroke_profile = p;
@@ -258,7 +302,7 @@ impl ToolStyle {
 
 /// An open document plus everything the editor tracks about it.
 /// A display list and the `(state, scene, frame, open symbol)` it was evaluated for.
-type CachedList = (StateId, usize, u32, Option<anicraft_doc::SymbolId>, Arc<DisplayList>);
+type CachedList = (StateId, usize, u32, Option<(editing::Opened, Option<(LayerId, ElementId)>, usize)>, Arc<DisplayList>);
 
 pub struct Session {
     /// The document: a persistent tree, so cloning it (undo, render thread) is cheap.
@@ -281,6 +325,9 @@ pub struct Session {
     saved_state: Option<StateId>,
     pub path: Option<PathBuf>,
     pub style: ToolStyle,
+    /// Whether the rulers, grid and guides show and snap (ADR 0076): the editor's, not the
+    /// document's.
+    pub aids: ViewAids,
     /// The style new text gets (the last one used).
     pub text_style: cmds_text::TextStyle,
     history: History,
@@ -290,8 +337,10 @@ pub struct Session {
     dl_cache: RefCell<Option<CachedList>>,
     /// Copied elements (and the symbols they use), outside the document so undo leaves it alone.
     pub clipboard: cmds_modify::Clipboard,
-    /// Copied frames (Copy Frames), separate from copied artwork as in Animate.
+    /// Copied frames (Copy Frames), separate from copied artwork.
     pub frame_clipboard: cmds_frames::FrameClipboard,
+    /// A copied ease (Copy Ease, ADR 0081), for Paste Ease.
+    pub ease_clipboard: Option<anicraft_doc::Easing>,
     /// A command is editing a motion tween's target (auto-key, ADR 0016).
     motion_edit: Option<cmds_motion::MotionEdit>,
     /// Installed WebAssembly plug-ins (ADR 0017). They belong to the session, not the
@@ -321,6 +370,16 @@ pub struct Session {
     /// session, not the document: they survive New and Open. The desktop app keeps them in its
     /// preferences.
     pub recent: cmds_recent::RecentFiles,
+    /// The user's own brush presets (ADR 0068). Like recent files they belong to the session
+    /// and survive New and Open; the desktop app keeps them in its preferences.
+    pub brushes: brush_library::BrushLibrary,
+    /// The user's filter presets (ADR 0091). Like brushes they belong to the session and
+    /// survive New and Open; the desktop app keeps them in its preferences.
+    pub filter_presets: filter_library::FilterLibrary,
+    /// Copied filters (Copy Filters, ADR 0091), for Paste Filters.
+    pub filter_clipboard: Option<Vec<anicraft_doc::FilterEntry>>,
+    /// The open envelope (ADR 0080): view state over the shapes it bends, like a gesture.
+    pub(crate) envelope: Option<cmds_envelope::Envelope>,
 }
 
 /// Each piece of a marquee's cut, with the shape it was cut from.
@@ -373,12 +432,14 @@ impl Session {
             saved_state: Some(state),
             path: None,
             style: ToolStyle::default(),
+            aids: ViewAids::default(),
             text_style: cmds_text::TextStyle::default(),
             history: History::default(),
             gesture: None,
             dl_cache: RefCell::new(None),
             clipboard: cmds_modify::Clipboard::default(),
             frame_clipboard: cmds_frames::FrameClipboard::default(),
+            ease_clipboard: None,
             motion_edit: None,
             plugins: anicraft_plugins::Registry::default(),
             step_label: None,
@@ -390,6 +451,10 @@ impl Session {
             job: None,
             published: std::collections::BTreeSet::new(),
             recent: cmds_recent::RecentFiles::default(),
+            brushes: brush_library::BrushLibrary::default(),
+            filter_presets: filter_library::FilterLibrary::default(),
+            filter_clipboard: None,
+            envelope: None,
         }
     }
 
@@ -472,8 +537,15 @@ impl Session {
         let clipboard = std::mem::take(&mut self.clipboard);
         let plugins = std::mem::take(&mut self.plugins);
         let recent = std::mem::take(&mut self.recent);
+        let brushes = std::mem::take(&mut self.brushes);
+        let filter_presets = std::mem::take(&mut self.filter_presets);
+        let filter_clipboard = self.filter_clipboard.take();
         *self = Session::new(doc);
         self.recent = recent;
+        self.brushes = brushes;
+        self.filter_presets = filter_presets;
+        // Like copied artwork, copied filters carry across to the next document.
+        self.filter_clipboard = filter_clipboard;
         // The clipboard survives New/Open, so artwork can move between documents.
         self.clipboard = clipboard;
         self.plugins = plugins;
@@ -493,10 +565,15 @@ impl Session {
         {
             return Err(EngineError::NeedsConfirmation(format!("{} {} (pass \"confirm\": true to proceed)", c.title, c.message)));
         }
+        // A group open for editing is one layer and one frame (ADR 0073).
+        if spec.mutates && self.editing_group() && GROUP_REFUSES.iter().any(|ns| if ns.ends_with('.') { id.starts_with(ns) } else { id == *ns }) {
+            return Err(EngineError::State("a group has one layer and one frame: close it (Edit › Edit Document) to change the timeline, or convert it to a symbol (F8) to animate inside it".into()));
+        }
         self.settle_cut(id, params);
         if !spec.mutates {
             let r = (spec.run)(self, params);
             self.settle_cut(id, params);
+            self.hold_group_frame();
             return r;
         }
         // An edit on a marquee's cut records its step from before the cut (ADR 0041).
@@ -547,6 +624,7 @@ impl Session {
                     }
                 }
                 self.fix_selection();
+                self.hold_group_frame();
                 Ok(v)
             }
             Err(e) => {
@@ -554,6 +632,14 @@ impl Session {
                 self.restore(rollback.unwrap_or(before));
                 Err(e)
             }
+        }
+    }
+
+    /// Inside a group (ADR 0073) the playhead stays on its only frame.
+    fn hold_group_frame(&mut self) {
+        if self.frame != 0 && self.editing_group() {
+            self.frame = 0;
+            self.fix_selection();
         }
     }
 
@@ -755,7 +841,7 @@ impl Session {
 
     /// The current scene evaluated at the playhead, cached per `(state, scene, frame)`.
     pub fn display_list(&self) -> Arc<DisplayList> {
-        let open = self.editing_symbol();
+        let open = self.editing.last().map(|l| (l.open, l.instance, self.editing.len()));
         if let Some((s, sc, f, o, dl)) = &*self.dl_cache.borrow()
             && *s == self.state
             && *sc == self.scene
@@ -764,11 +850,8 @@ impl Session {
         {
             return dl.clone();
         }
-        // An open symbol is edited in its own space (ADR 0045).
-        let dl = Arc::new(match open.and_then(|id| self.doc.symbol(id)) {
-            Some(sym) => anicraft_doc::evaluate_timeline(&self.doc, &sym.timeline, self.frame),
-            None => evaluate_scene(&self.doc, self.scene, self.frame),
-        });
+        // An open symbol (ADR 0045) or group (ADR 0073) is edited in its own space.
+        let dl = Arc::new(if open.is_some() { anicraft_doc::evaluate_timeline(&self.doc, self.timeline(), self.frame) } else { evaluate_scene(&self.doc, self.scene, self.frame) });
         self.dl_cache.replace(Some((self.state, self.scene, self.frame, open, dl.clone())));
         dl
     }
@@ -785,6 +868,32 @@ impl Session {
         // The timeline being edited: a symbol open in place picks in its own layers (ADR 0045).
         let tl = self.timeline();
         let dl = self.display_list();
+        let i = pick_index(&dl, p, slop, |_, it| tl.layer(it.layer).is_some_and(|layer| !layer.locked && !tl.locked_by_folder(layer.id)))?;
+        dl.items.get(i).map(|it| (it.layer, it.element))
+    }
+
+    /// Stage → output for layer `id` at the playhead as the camera shows it (ADR 0082): the
+    /// camera and the layer's depth then, the identity for an attached layer. `None` without a
+    /// camera that does something, while a symbol is open, or when the camera has passed the
+    /// layer. What editing through the camera maps the pointer back with.
+    pub fn camera_view(&self, id: LayerId) -> Option<Affine> {
+        if !self.editing.is_empty() {
+            return None;
+        }
+        let tl = self.doc.timeline(self.scene);
+        let cam = tl.camera_at(self.frame, &self.doc.stage)?;
+        cam.layer_view(&self.doc.stage, tl.layer(id)?, self.frame)
+    }
+
+    /// [`Session::hit_test`] through the scene's camera: the topmost element under output
+    /// point `p` (the movie's pixels) on a visible, unlocked layer, `slop` in output pixels.
+    /// Without a camera that does something this is the stage's hit test.
+    pub fn hit_test_camera(&self, p: Vec2, slop: f32) -> Option<(LayerId, ElementId)> {
+        if !self.editing.is_empty() || self.doc.timeline(self.scene).camera_at(self.frame, &self.doc.stage).is_none() {
+            return self.hit_test(p, slop);
+        }
+        let tl = self.timeline();
+        let dl = anicraft_doc::evaluate_scene_camera(&self.doc, self.scene, self.frame);
         let i = pick_index(&dl, p, slop, |_, it| tl.layer(it.layer).is_some_and(|layer| !layer.locked && !tl.locked_by_folder(layer.id)))?;
         dl.items.get(i).map(|it| (it.layer, it.element))
     }
@@ -808,7 +917,7 @@ impl Session {
 
     pub(crate) fn layer_mut(&mut self, id: Option<LayerId>) -> Result<&mut Layer> {
         let id = id.unwrap_or(self.layer);
-        crate::editing::edited_mut(&mut self.doc, self.scene, &self.editing).layer_mut(id).ok_or_else(|| EngineError::State(format!("no layer with id {}", id.0)))
+        crate::editing::edited_mut(&mut self.doc, self.scene, &self.editing)?.layer_mut(id).ok_or_else(|| EngineError::State(format!("no layer with id {}", id.0)))
     }
 
     /// The keyframe on the active layer that edits at the playhead should change. Creates a
@@ -839,7 +948,7 @@ impl Session {
         }
         // Through the fields, not `layer_mut`, so `motion_edit` can be set below.
         let (scene, active) = (self.scene, self.layer);
-        let layer = crate::editing::edited_mut(&mut self.doc, scene, &self.editing).layer_mut(active).ok_or_else(|| EngineError::State(format!("no layer with id {}", active.0)))?;
+        let layer = crate::editing::edited_mut(&mut self.doc, scene, &self.editing)?.layer_mut(active).ok_or_else(|| EngineError::State(format!("no layer with id {}", active.0)))?;
         if layer.locked {
             return Err(EngineError::State(format!("layer '{}' is locked", layer.name)));
         }
@@ -876,6 +985,29 @@ impl Session {
         Ok(kf.elements_mut_where(|id| sel.contains(&id)))
     }
 
+    /// [`Session::selected_elements_mut`] for the properties an instance keeps however it is
+    /// placed (colour effect, blending, filters). On an armature layer (ADR 0084) the selected
+    /// members are edited in place on every pose of the armature, so the property holds as the
+    /// armature moves and the bones and poses are untouched; elsewhere, as any edit.
+    pub(crate) fn selected_props_mut(&mut self) -> Result<Vec<&mut Element>> {
+        let on_armature = self.timeline().layer(self.layer).is_some_and(|l| l.kind == LayerKind::Armature);
+        if !on_armature {
+            return self.selected_elements_mut();
+        }
+        let sel: std::collections::HashSet<ElementId> = self.selection.on(self.layer).into_iter().collect();
+        if sel.is_empty() {
+            return Err(EngineError::State("nothing is selected".into()));
+        }
+        if self.timeline().locked_by_folder(self.layer) {
+            return Err(EngineError::State("the armature layer is in a locked folder".into()));
+        }
+        let layer = self.layer_mut(None)?;
+        if layer.locked {
+            return Err(EngineError::State(format!("layer '{}' is locked", layer.name)));
+        }
+        Ok(layer.keyframes.iter_mut().flat_map(|k| Arc::make_mut(k).elements_mut_where(|id| sel.contains(&id))).collect())
+    }
+
     /// JSON summary used by `doc.info` and the CLI.
     pub fn info(&self) -> Value {
         let layers: Vec<Value> = self
@@ -885,7 +1017,7 @@ impl Session {
             .map(|l| {
                 json!({
                     "id": l.id.0, "name": l.name, "visible": l.visible, "locked": l.locked, "volume": l.volume, "muted": l.muted,
-                    "keyframes": l.keyframes.iter().map(|k| json!({"start": k.start, "duration": k.duration, "elements": k.elements.len(), "tween": k.tween.map(|t| t.easing.label()), "motion": k.motion.as_ref().map(|m| m.tracks.iter().map(|t| t.property.key()).collect::<Vec<_>>()), "sound": k.sound.as_ref().map(|f| json!({"sound": f.sound.0, "sync": f.sync.key(), "repeat": f.repeat, "loop": f.looping, "effect": f.effect.key()})), "script": k.script.as_ref().map(anicraft_doc::FrameScript::describe)})).collect::<Vec<_>>()
+                    "keyframes": l.keyframes.iter().map(|k| json!({"start": k.start, "duration": k.duration, "elements": k.elements.len(), "tween": k.tween.as_ref().map(|t| t.easing.label()), "motion": k.motion.as_ref().map(|m| m.tracks.iter().map(|t| t.property.key()).collect::<Vec<_>>()), "sound": k.sound.as_ref().map(|f| json!({"sound": f.sound.0, "sync": f.sync.key(), "repeat": f.repeat, "loop": f.looping, "effect": f.effect.key()})), "script": k.script.as_ref().map(anicraft_doc::FrameScript::describe)})).collect::<Vec<_>>()
                 })
             })
             .collect();
@@ -962,6 +1094,14 @@ pub fn element_label(doc: &Document, e: &Element) -> String {
             None => "Graphic: missing".to_string(),
         },
         ElementKind::Camera => "Camera".to_string(),
+        ElementKind::Group { .. } => "Group".to_string(),
+        // An empty field (an input field waiting for the viewer) is named by its type.
+        ElementKind::Text(t) if t.text.trim().is_empty() => match t.kind() {
+            anicraft_doc::TextKind::Static => "Static text",
+            anicraft_doc::TextKind::Dynamic => "Dynamic text",
+            anicraft_doc::TextKind::Input => "Input text",
+        }
+        .to_string(),
         ElementKind::Text(t) => {
             let first: String = t.text.lines().next().unwrap_or("").chars().take(24).collect();
             format!("Text: {first}{}", if t.text.chars().count() > first.chars().count() { "…" } else { "" })
@@ -976,6 +1116,10 @@ mod tests;
 #[cfg(test)]
 mod motion_tests;
 #[cfg(test)]
+mod retime_tests;
+#[cfg(test)]
+mod ease_tests;
+#[cfg(test)]
 mod color_tests;
 #[cfg(test)]
 mod motion_path_tests;
@@ -983,6 +1127,8 @@ mod motion_path_tests;
 mod motion_pin_tests;
 #[cfg(test)]
 mod plugin_tests;
+#[cfg(test)]
+mod plugin_kinds_tests;
 #[cfg(test)]
 mod tests_sound;
 #[cfg(test)]
@@ -996,6 +1142,20 @@ mod tests_camera;
 #[cfg(test)]
 mod tests_bone;
 #[cfg(test)]
+mod tests_bone_spring;
+#[cfg(test)]
+mod tests_shape_bone;
+#[cfg(test)]
+mod tests_shape_weights;
+#[cfg(test)]
+mod tests_warp;
+#[cfg(test)]
+mod tests_filter;
+#[cfg(test)]
+mod tests_filter_tracks;
+#[cfg(test)]
+mod desktop_tests;
+#[cfg(test)]
 mod merge_tests;
 #[cfg(test)]
 mod raw_tests;
@@ -1008,14 +1168,36 @@ mod editing_tests;
 #[cfg(test)]
 mod brush_tests;
 #[cfg(test)]
+mod brush_library_tests;
+#[cfg(test)]
 mod web_tests;
 #[cfg(test)]
 mod erase_tests;
 #[cfg(test)]
 mod eyedropper_tests;
 #[cfg(test)]
+mod gradient_tests;
+#[cfg(test)]
 mod selection_tests;
 #[cfg(test)]
 mod scale_grid_tests;
 #[cfg(test)]
 mod drop_tests;
+#[cfg(test)]
+mod template_tests;
+#[cfg(test)]
+mod timeline_drop_tests;
+#[cfg(test)]
+mod timeline_key_tests;
+#[cfg(test)]
+mod tests_bone_chain;
+#[cfg(test)]
+mod view_tests;
+#[cfg(test)]
+mod path_text_tests;
+#[cfg(test)]
+mod group_tests;
+#[cfg(test)]
+mod swatch_tests;
+#[cfg(test)]
+mod parity_tests;
