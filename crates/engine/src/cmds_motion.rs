@@ -270,7 +270,7 @@ fn set_path(s: &mut Session, p: &Value) -> Result<Value> {
     if d.len() > MAX_PATH_DATA {
         return Err(EngineError::Param("param 'd' is too long".into()));
     }
-    let path = anicraft_geom::svg::parse_path_data(d).map_err(|e| EngineError::Param(format!("param 'd': {e}")))?;
+    let path = anicraft_svg::parse_path_data(d).map_err(|e| EngineError::Param(format!("param 'd': {e}")))?;
     let (kf, _) = motion_span(s, p)?;
     let base = base_of(kf)?;
     let (start, last) = (kf.start, kf.duration.saturating_sub(1));

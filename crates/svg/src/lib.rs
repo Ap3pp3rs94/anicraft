@@ -27,7 +27,6 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
 use anicraft_doc::{Cap, Dash, ElementKind, GradientStop, Join, Paint, Rgba, Shape, Spread, Stroke, StrokeStyle, MAX_FOCAL};
-use anicraft_geom::svg::parse_path_data;
 use anicraft_geom::{Affine, FillRule, Path, Rect, Vec2};
 use anicraft_text::{FaceMatch, Fonts};
 use anicraft_xml::Element as X;
@@ -36,7 +35,10 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 mod clip;
+mod path_data;
 mod text;
+
+pub use path_data::parse_path_data;
 
 #[cfg(test)]
 mod clip_tests;
@@ -59,6 +61,10 @@ pub enum SvgError {
     Xml(#[from] anicraft_xml::XmlError),
     #[error("this is not an SVG drawing (its root element is <{0}>)")]
     NotSvg(String),
+    /// The bytes could not be read as SVG text within the shared limits (SVGZ unpacking, text
+    /// encoding, entity expansion, nesting, attributes).
+    #[error(transparent)]
+    Preflight(#[from] craft_svg::preflight::Error),
 }
 
 /// What could not come across, by kind ("2 images"), and the fonts the text asks for that
@@ -167,7 +173,8 @@ pub fn import_with_fonts(bytes: &[u8], fonts: &Fonts) -> Result<SvgImport, SvgEr
 }
 
 fn import_from(bytes: &[u8], fonts: Option<&Fonts>) -> Result<SvgImport, SvgError> {
-    let root = anicraft_xml::parse_mixed(bytes, TEXT_CONTENT)?;
+    let text = svg_text(bytes)?;
+    let root = anicraft_xml::parse_mixed(text.as_bytes(), TEXT_CONTENT)?;
     if local(&root.name) != "svg" {
         return Err(SvgError::NotSvg(root.name.clone()));
     }
@@ -196,6 +203,27 @@ fn import_from(bytes: &[u8], fonts: Option<&Fonts>) -> Result<SvgImport, SvgErro
     b.children(&root, &base, &style, 1.0, 0, 0);
     let layers = b.layers();
     Ok(SvgImport { width: w, height: h, layers, report: b.report })
+}
+
+/// The document as UTF-8 text: SVGZ unpacked and UTF-16 or Latin-1 decoded within the shared
+/// size limit, and hostile markup (entity bombs, very wide elements, deep nesting) refused before
+/// the XML reader builds a tree. The XML itself is left to `anicraft_xml`, which accepts what
+/// drawing tools write loosely (an undeclared `xlink:` prefix).
+fn svg_text(bytes: &[u8]) -> Result<std::borrow::Cow<'_, str>, SvgError> {
+    use craft_svg::guard;
+    use craft_svg::preflight::{Error, Limits};
+    let limits = Limits::default();
+    let text = craft_svg::svgz::text(bytes, limits.bytes).map_err(Error::from)?;
+    if guard::entities_expand_past(&text, limits.entity_bytes) {
+        return Err(Error::Entities.into());
+    }
+    if guard::too_wide(&text, limits.attributes, limits.attribute_work) {
+        return Err(Error::TooWide(limits.attributes).into());
+    }
+    if guard::deeper_than(&text, limits.depth) {
+        return Err(Error::TooDeep(limits.depth).into());
+    }
+    Ok(text)
 }
 
 /// The element's `id`, as an element name.

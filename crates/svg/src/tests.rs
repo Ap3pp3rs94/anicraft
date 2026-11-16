@@ -227,3 +227,35 @@ fn hostile_input_is_an_error_or_harmless() {
     assert!(i.report.skipped.contains_key("references nested too deeply"));
     assert!(i.report.skipped.contains_key("unreadable paths"));
 }
+
+#[test]
+fn svgz_and_other_encodings_are_read() {
+    let svg = r##"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><rect width="4" height="4" fill="#123456"/></svg>"##;
+    let packed = craft_svg::svgz::compress(svg.as_bytes());
+    let i = import_with_fonts(&packed, &Fonts::from_faces(Vec::new())).unwrap();
+    assert_eq!(i.elements().count(), 1);
+    // UTF-16 with a byte order mark.
+    let utf16: Vec<u8> = [0xFF, 0xFE].into_iter().chain(svg.encode_utf16().flat_map(u16::to_le_bytes)).collect();
+    let i = import_with_fonts(&utf16, &Fonts::from_faces(Vec::new())).unwrap();
+    assert_eq!(i.elements().count(), 1);
+}
+
+#[test]
+fn hostile_markup_is_refused_before_parsing() {
+    let fonts = Fonts::from_faces(Vec::new());
+    // Entities that expand a thousandfold at each level.
+    let mut bomb = String::from("<?xml version=\"1.0\"?><!DOCTYPE svg [<!ENTITY a \"aaaaaaaaaa\">");
+    let mut prev = 'a';
+    for name in ['b', 'c', 'd', 'e', 'f', 'g', 'h'] {
+        bomb.push_str(&format!("<!ENTITY {name} \"{}\">", format!("&{prev};").repeat(10)));
+        prev = name;
+    }
+    bomb.push_str("]><svg xmlns=\"http://www.w3.org/2000/svg\"><text>&h;</text></svg>");
+    assert!(matches!(import_with_fonts(bomb.as_bytes(), &fonts), Err(SvgError::Preflight(_))));
+    // Groups nested far past any drawing.
+    let deep = format!("<svg xmlns=\"http://www.w3.org/2000/svg\">{}{}</svg>", "<g>".repeat(5000), "</g>".repeat(5000));
+    assert!(matches!(import_with_fonts(deep.as_bytes(), &fonts), Err(SvgError::Preflight(_))));
+    // An unpacked SVGZ past the size limit.
+    let huge = craft_svg::svgz::compress(&vec![b' '; (64 << 20) + 1]);
+    assert!(matches!(import_with_fonts(&huge, &fonts), Err(SvgError::Preflight(_))));
+}

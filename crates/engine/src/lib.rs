@@ -79,6 +79,7 @@ pub use anicraft_plugins as plugins;
 pub use anicraft_text as text;
 pub use anicraft_geom as geom;
 pub use anicraft_render as render;
+pub use anicraft_svg as svg;
 /// Whether a path is an Animate document (`.fla`, `.xfl`, or an XFL folder) that `file.open`
 /// imports.
 pub use cmds_file::is_animate;

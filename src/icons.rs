@@ -2,11 +2,11 @@
 //!
 //! Lucide icons are 24 × 24 outlines made of a few SVG shapes. Rather than pull in an SVG
 //! rasterizer, the shapes are parsed once with the engine's own SVG path reader
-//! (`geom::svg`) and stroked as vectors at the exact on-screen size, so they stay crisp at any
+//! (`anicraft_svg::parse_path_data`, on craft-svg) and stroked as vectors at the exact on-screen size, so they stay crisp at any
 //! interface scale and cost nothing in build size. Only icons the app uses are embedded; add a
 //! file to `assets/icons/` and a variant here to use another.
 
-use anicraft_engine::geom::svg::parse_path_data;
+use anicraft_engine::svg::parse_path_data;
 use anicraft_engine::geom::{Affine, Path, Vec2};
 use egui::{Color32, Pos2, Rect, Stroke, pos2};
 use std::collections::HashMap;
