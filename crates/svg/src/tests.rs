@@ -200,7 +200,7 @@ fn colours() {
     assert_eq!(color("#f00"), Some(Rgba::hex(0xff0000)));
     assert_eq!(color("#ff000080").map(|c| (c.a * 255.0).round()), Some(128.0));
     assert_eq!(color("rgba(255, 0, 0, 0.25)"), Some(Rgba::new(1.0, 0.0, 0.0, 0.25)));
-    assert_eq!(color("rgb(100%, 50%, 0%)"), Some(Rgba::new(1.0, 0.5, 0.0, 1.0)));
+    assert_eq!(color("rgb(100%, 50%, 0%)"), Some(Rgba::hex(0xff8000)));
     assert_eq!(color("SteelBlue"), Some(Rgba::hex(0x4682b4)));
     assert_eq!(color("transparent"), Some(Rgba::TRANSPARENT));
     for bad in ["", "#12", "rgb(1,2)", "notacolour", "#ééé"] {

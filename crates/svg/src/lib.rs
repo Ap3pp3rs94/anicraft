@@ -353,103 +353,16 @@ fn transform(s: &str) -> Affine {
     if m.is_finite() { m } else { Affine::IDENTITY }
 }
 
-fn named(name: &str) -> Option<u32> {
-    Some(match name {
-        "black" => 0x000000,
-        "white" => 0xffffff,
-        "red" => 0xff0000,
-        "lime" => 0x00ff00,
-        "green" => 0x008000,
-        "blue" => 0x0000ff,
-        "yellow" => 0xffff00,
-        "cyan" | "aqua" => 0x00ffff,
-        "magenta" | "fuchsia" => 0xff00ff,
-        "gray" | "grey" => 0x808080,
-        "silver" => 0xc0c0c0,
-        "maroon" => 0x800000,
-        "olive" => 0x808000,
-        "purple" => 0x800080,
-        "teal" => 0x008080,
-        "navy" => 0x000080,
-        "orange" => 0xffa500,
-        "pink" => 0xffc0cb,
-        "brown" => 0xa52a2a,
-        "gold" => 0xffd700,
-        "indigo" => 0x4b0082,
-        "violet" => 0xee82ee,
-        "coral" => 0xff7f50,
-        "salmon" => 0xfa8072,
-        "tomato" => 0xff6347,
-        "crimson" => 0xdc143c,
-        "khaki" => 0xf0e68c,
-        "beige" => 0xf5f5dc,
-        "ivory" => 0xfffff0,
-        "tan" => 0xd2b48c,
-        "chocolate" => 0xd2691e,
-        "sienna" => 0xa0522d,
-        "turquoise" => 0x40e0d0,
-        "skyblue" => 0x87ceeb,
-        "steelblue" => 0x4682b4,
-        "royalblue" => 0x4169e1,
-        "darkblue" => 0x00008b,
-        "lightblue" => 0xadd8e6,
-        "darkgreen" => 0x006400,
-        "lightgreen" => 0x90ee90,
-        "forestgreen" => 0x228b22,
-        "darkred" => 0x8b0000,
-        "darkgray" | "darkgrey" => 0xa9a9a9,
-        "lightgray" | "lightgrey" => 0xd3d3d3,
-        "dimgray" | "dimgrey" => 0x696969,
-        "darkorange" => 0xff8c00,
-        "orchid" => 0xda70d6,
-        "plum" => 0xdda0dd,
-        "lavender" => 0xe6e6fa,
-        "slategray" | "slategrey" => 0x708090,
-        "whitesmoke" => 0xf5f5f5,
-        "gainsboro" => 0xdcdcdc,
-        _ => return None,
-    })
-}
-
-/// A CSS colour (`#rgb`, `#rgba`, `#rrggbb`, `#rrggbbaa`, `rgb()`, `rgba()`, a name).
+/// A CSS colour (`#rgb`, `#rgba`, `#rrggbb`, `#rrggbbaa`, `rgb()`/`hsl()`, a name).
+/// `transparent` stays here: the shared parser treats it as an error so callers that
+/// need an opaque colour are not surprised.
 fn color(v: &str) -> Option<Rgba> {
     let v = v.trim();
-    let lower = v.to_ascii_lowercase();
-    if let Some(h) = lower.strip_prefix('#') {
-        let expand = |s: &str| s.chars().flat_map(|c| [c, c]).collect::<String>();
-        return match h.len() {
-            3 | 4 => Rgba::parse_hex(&expand(h)),
-            6 | 8 => Rgba::parse_hex(h),
-            _ => None,
-        };
-    }
-    if let Some(args) = lower.strip_prefix("rgba(").or_else(|| lower.strip_prefix("rgb(")) {
-        let args = args.trim_end_matches(')');
-        let parts: Vec<&str> = args.split([',', ' ', '/']).filter(|p| !p.is_empty()).collect();
-        let chan = |p: &str| -> Option<f32> {
-            match p.strip_suffix('%') {
-                Some(pc) => pc.parse::<f32>().ok().map(|x| x / 100.0),
-                None => p.parse::<f32>().ok().map(|x| x / 255.0),
-            }
-            .filter(|x| x.is_finite())
-            .map(|x| x.clamp(0.0, 1.0))
-        };
-        let alpha = |p: &str| -> Option<f32> {
-            match p.strip_suffix('%') {
-                Some(pc) => pc.parse::<f32>().ok().map(|x| x / 100.0),
-                None => p.parse::<f32>().ok(),
-            }
-            .filter(|x| x.is_finite())
-            .map(|x| x.clamp(0.0, 1.0))
-        };
-        let (r, g, b) = (chan(parts.first()?)?, chan(parts.get(1)?)?, chan(parts.get(2)?)?);
-        let a = parts.get(3).map_or(Some(1.0), |p| alpha(p))?;
-        return Some(Rgba::new(r, g, b, a));
-    }
-    if lower == "transparent" {
+    if v.eq_ignore_ascii_case("transparent") {
         return Some(Rgba::TRANSPARENT);
     }
-    named(&lower).map(Rgba::hex)
+    let (c, a) = craft_svg::color::parse_color_alpha(v).ok()?;
+    Some(Rgba::new(f32::from(c.r) / 255.0, f32::from(c.g) / 255.0, f32::from(c.b) / 255.0, a))
 }
 
 // ----- style ------------------------------------------------------------------------------------
