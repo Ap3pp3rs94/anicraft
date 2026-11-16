@@ -205,6 +205,11 @@ fn colours() {
     assert_eq!(color("transparent"), Some(Rgba::TRANSPARENT));
     assert_eq!(color("rgb(300, 0, 0)"), Some(Rgba::hex(0xff0000)));
     assert_eq!(color("rgb(-20, 50%, 200%)"), Some(Rgba::hex(0x0080ff)));
+    // Fractional number-form channels are clipped and retried as integers (127.5 → 128).
+    assert_eq!(color("rgb(300, 127.5, 0)"), Some(Rgba::hex(0xff8000)));
+    // A fifth component is rejected without scanning the rest of a huge argument list.
+    let huge = format!("rgb(0,0,0,0{})", ",0".repeat(200_000));
+    assert_eq!(color(&huge), None);
     for bad in ["", "#12", "rgb(1,2)", "notacolour", "#ééé"] {
         assert_eq!(color(bad), None, "{bad}");
     }

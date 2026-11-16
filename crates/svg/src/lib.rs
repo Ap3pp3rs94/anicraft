@@ -381,6 +381,10 @@ fn rgba_from_shared(v: &str) -> Option<Rgba> {
 
 /// `rgb()`/`rgba()` with each channel clipped to its range (0–255, or 0%–100%). Other
 /// colour forms are left alone so the shared parser's errors still stand.
+///
+/// At most four components are collected, so a 60 MiB `rgb(0,0,0,0,0,…)` does not
+/// allocate millions of slices before being rejected. Number-form channels are
+/// emitted as integers: the shared parser rejects a decimal such as `127.5`.
 fn clipped_rgb(v: &str) -> Option<String> {
     let lower = v.trim().to_ascii_lowercase();
     let (name, rest) = lower.split_once('(')?;
@@ -388,18 +392,33 @@ fn clipped_rgb(v: &str) -> Option<String> {
         return None;
     }
     let body = rest.trim().strip_suffix(')')?;
-    let parts: Vec<&str> = if body.contains(',') {
-        body.split(',').map(str::trim).collect()
+    let mut parts: Vec<&str> = Vec::with_capacity(4);
+    if body.contains(',') {
+        for p in body.split(',') {
+            if parts.len() >= 4 {
+                return None;
+            }
+            parts.push(p.trim());
+        }
     } else {
         let (channels, alpha) = match body.split_once('/') {
             Some((channels, alpha)) => (channels, Some(alpha.trim())),
             None => (body, None),
         };
-        let mut parts: Vec<&str> = channels.split_whitespace().collect();
-        parts.extend(alpha);
-        parts
-    };
-    if parts.len() < 3 {
+        for p in channels.split_whitespace() {
+            if parts.len() >= 4 {
+                return None;
+            }
+            parts.push(p);
+        }
+        if let Some(alpha) = alpha {
+            if parts.len() >= 4 {
+                return None;
+            }
+            parts.push(alpha);
+        }
+    }
+    if parts.len() != 3 && parts.len() != 4 {
         return None;
     }
     let clip_rgb = |p: &str| -> Option<String> {
@@ -408,7 +427,8 @@ fn clipped_rgb(v: &str) -> Option<String> {
             return Some(format!("{}%", n.clamp(0.0, 100.0)));
         }
         let n: f32 = p.parse().ok().filter(|x: &f32| x.is_finite())?;
-        Some(format!("{}", n.clamp(0.0, 255.0)))
+        // The shared parser rejects non-percentage decimals; CSS 8-bit channels are integers.
+        Some(format!("{}", n.clamp(0.0, 255.0).round() as u8))
     };
     let clip_alpha = |p: &str| -> Option<String> {
         if let Some(pc) = p.strip_suffix('%') {
