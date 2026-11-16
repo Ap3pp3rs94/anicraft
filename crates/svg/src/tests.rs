@@ -203,6 +203,8 @@ fn colours() {
     assert_eq!(color("rgb(100%, 50%, 0%)"), Some(Rgba::hex(0xff8000)));
     assert_eq!(color("SteelBlue"), Some(Rgba::hex(0x4682b4)));
     assert_eq!(color("transparent"), Some(Rgba::TRANSPARENT));
+    assert_eq!(color("rgb(300, 0, 0)"), Some(Rgba::hex(0xff0000)));
+    assert_eq!(color("rgb(-20, 50%, 200%)"), Some(Rgba::hex(0x0080ff)));
     for bad in ["", "#12", "rgb(1,2)", "notacolour", "#ééé"] {
         assert_eq!(color(bad), None, "{bad}");
     }

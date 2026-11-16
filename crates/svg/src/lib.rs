@@ -214,6 +214,11 @@ fn svg_text(bytes: &[u8]) -> Result<std::borrow::Cow<'_, str>, SvgError> {
     use craft_svg::preflight::{Error, Limits};
     let limits = Limits::default();
     let text = craft_svg::svgz::text(bytes, limits.bytes).map_err(Error::from)?;
+    // svgz::text limits the source or inflated bytes, not the UTF-8 length after Latin-1
+    // (or UTF-16) decoding. A 40 MiB Latin-1 file of non-ASCII would become ~80 MiB here.
+    if text.len() > limits.bytes {
+        return Err(Error::Text(craft_svg::svgz::Error::TooLarge(limits.bytes)).into());
+    }
     if guard::entities_expand_past(&text, limits.entity_bytes) {
         return Err(Error::Entities.into());
     }
@@ -361,8 +366,66 @@ fn color(v: &str) -> Option<Rgba> {
     if v.eq_ignore_ascii_case("transparent") {
         return Some(Rgba::TRANSPARENT);
     }
+    if let Some(rgba) = rgba_from_shared(v) {
+        return Some(rgba);
+    }
+    // CSS clips out-of-range rgb()/rgba() channels; the shared parser rejects them. Clip
+    // and try once more so `fill="rgb(300,0,0)"` still becomes red, as it did before the pin.
+    rgba_from_shared(&clipped_rgb(v)?)
+}
+
+fn rgba_from_shared(v: &str) -> Option<Rgba> {
     let (c, a) = craft_svg::color::parse_color_alpha(v).ok()?;
     Some(Rgba::new(f32::from(c.r) / 255.0, f32::from(c.g) / 255.0, f32::from(c.b) / 255.0, a))
+}
+
+/// `rgb()`/`rgba()` with each channel clipped to its range (0–255, or 0%–100%). Other
+/// colour forms are left alone so the shared parser's errors still stand.
+fn clipped_rgb(v: &str) -> Option<String> {
+    let lower = v.trim().to_ascii_lowercase();
+    let (name, rest) = lower.split_once('(')?;
+    if name != "rgb" && name != "rgba" {
+        return None;
+    }
+    let body = rest.trim().strip_suffix(')')?;
+    let parts: Vec<&str> = if body.contains(',') {
+        body.split(',').map(str::trim).collect()
+    } else {
+        let (channels, alpha) = match body.split_once('/') {
+            Some((channels, alpha)) => (channels, Some(alpha.trim())),
+            None => (body, None),
+        };
+        let mut parts: Vec<&str> = channels.split_whitespace().collect();
+        parts.extend(alpha);
+        parts
+    };
+    if parts.len() < 3 {
+        return None;
+    }
+    let clip_rgb = |p: &str| -> Option<String> {
+        if let Some(pc) = p.strip_suffix('%') {
+            let n: f32 = pc.parse().ok().filter(|x: &f32| x.is_finite())?;
+            return Some(format!("{}%", n.clamp(0.0, 100.0)));
+        }
+        let n: f32 = p.parse().ok().filter(|x: &f32| x.is_finite())?;
+        Some(format!("{}", n.clamp(0.0, 255.0)))
+    };
+    let clip_alpha = |p: &str| -> Option<String> {
+        if let Some(pc) = p.strip_suffix('%') {
+            let n: f32 = pc.parse().ok().filter(|x: &f32| x.is_finite())?;
+            return Some(format!("{}%", n.clamp(0.0, 100.0)));
+        }
+        let n: f32 = p.parse().ok().filter(|x: &f32| x.is_finite())?;
+        Some(format!("{}", n.clamp(0.0, 1.0)))
+    };
+    let r = clip_rgb(parts[0])?;
+    let g = clip_rgb(parts[1])?;
+    let b = clip_rgb(parts[2])?;
+    if let Some(a) = parts.get(3) {
+        Some(format!("rgb({r}, {g}, {b}, {})", clip_alpha(a)?))
+    } else {
+        Some(format!("rgb({r}, {g}, {b})"))
+    }
 }
 
 // ----- style ------------------------------------------------------------------------------------
