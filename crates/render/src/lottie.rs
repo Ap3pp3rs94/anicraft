@@ -1119,8 +1119,13 @@ mod tests {
     #[test]
     fn shared_path_wire_keeps_legacy_values_and_precision() {
         for closed in [false, true] {
-            for flat in [vec![], vec![1.23456], vec![0.0, -0.0, f64::NAN, f64::INFINITY, 1.23456, -2.34567], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0], vec![1e303, -1e303, f64::MAX, -f64::MAX, 0.0, 0.0]]
-            {
+            for flat in [
+                vec![],
+                vec![1.23456],
+                vec![0.0, -0.0, f64::NAN, f64::INFINITY, 1.23456, -2.34567],
+                vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0],
+                vec![1e303, -1e303, f64::MAX, -f64::MAX, 0.0, 0.0],
+            ] {
                 let pts: Vec<Value> =
                     flat.chunks(2).map(|c| json!([num(c.first().copied().unwrap_or(0.0)), num(c.get(1).copied().unwrap_or(0.0))])).collect();
                 let k = pts.len() / 3;
