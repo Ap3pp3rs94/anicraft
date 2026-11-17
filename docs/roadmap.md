@@ -6,6 +6,10 @@ milestone ends with a green tree: build, tests, clippy, a `--screenshot` check a
 
 ## Honest status (2026-11-09, v0.1.0 early alpha)
 
+Streaming WAV headers and PCM sample blocks now delegate to `craft_audio::wav_stream`;
+AniCraft retains mixing, frame-range limits, temporary-file cleanup and VFS writes.
+This integration depends on craft-libs #1962 and still requires hosted parity validation.
+
 | Dimension | Status |
 |---|---|
 | Architecture | M0 skeleton in place: geom → doc → render → engine → cli → shell, layering enforced by `cargo test` (`src/architecture_tests.rs`: lower layers only, no UI crates below the shell, and the AGENTS.md map must match). |
