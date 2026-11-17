@@ -30,7 +30,7 @@ anicraft-guide = { path = "crates/guide" }
 craft-anicraft-format = { git = "https://github.com/storytold/craft-libs", rev = "f0f4758c01581d79577b9bf5046c06f4e77b1f18" }
 craft-mime = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "f0f4758c01581d79577b9bf5046c06f4e77b1f18" }
 craft-html = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "f0f4758c01581d79577b9bf5046c06f4e77b1f18", default-features = false }
-craft-audio = { git = "https://github.com/storytold/craft-libs", rev = "a5734d988aae0200924e922b9ea86f4b5c01cd16", default-features = false, features = ["decode", "pcm-encode"] }
+craft-audio = { git = "https://github.com/storytold/craft-libs", rev = "e2bf53f2bdba4828e21097774a568ed9c74b0004", default-features = false, features = ["decode", "pcm-encode"] }
 craft-gif = { git = "https://github.com/storytold/craft-libs", rev = "f0f4758c01581d79577b9bf5046c06f4e77b1f18" }
 # Isolate the already-merged APNG container from the existing raster-codec pin.
 craft-apng-container = { package = "craft-image-codecs", version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "55b1d7f3c598b600a130ae63f4a40334a230ae7b", default-features = false }
