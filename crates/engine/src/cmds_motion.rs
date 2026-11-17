@@ -6,11 +6,20 @@
 //! [`begin_edit`] swaps the target for how it looks at the playhead, and after the command
 //! [`finish_edit`] turns whatever changed in its transform or colour effect into property keys
 //! and puts the base object back (with any other change, a new fill say, kept).
+//!
+//! Filters (ADR 0092): a filter's numbers tween as properties too, addressed by the filter's place
+//! (`filter.0.blur_x`). An edit of a filter's number at the playhead keys it there; an edit that
+//! reorders, removes or adds filters takes the tracks along with their filters.
+//!
+//! On a motion path, moving the object at a frame pins the path there (ADR 0049): the anchor
+//! pinned to that frame moves (an end, at the first or last position key), or a new anchor is
+//! added where the object is, pinned to the frame, and moved; after the last position key the
+//! path carries on to where the object was put.
 
 use crate::cmds_timeline::target;
 use crate::params::*;
 use crate::{CommandSpec, EngineError, Result, Session};
-use anicraft_doc::{ColorEffect, Element, ElementId, Keyframe, Layer, LayerId, LayerKind, MotionTween, Property, Props};
+use anicraft_doc::{Element, ElementId, ElementKind, FilterEntry, Keyframe, Layer, LayerId, LayerKind, MotionTween, Pin, PinError, Property, Props, filter_properties, own_value};
 use anicraft_geom::{Affine, Vec2};
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -18,10 +27,10 @@ use std::sync::Arc;
 pub fn specs() -> Vec<CommandSpec> {
     let c = |id, label, menu, shortcut, params, mutates, run| CommandSpec { id, label, menu, shortcut, params, mutates, run };
     vec![
-        c("motion.set_key", "Property Keyframe", "", None, "{property: x|y|scale_x|scale_y|rotation|skew|alpha|tint, value (px, %, °), frame?, layer?}", true, set_key as crate::RunFn),
+        c("motion.set_key", "Property Keyframe", "", None, "{property: x|y|scale_x|scale_y|rotation|skew|alpha|brightness|tint (amount)|tint_red|tint_green|tint_blue (0..255)|red_multiplier|green_multiplier|blue_multiplier|alpha_multiplier (%)|red_offset|green_offset|blue_offset|alpha_offset (-255..255)|filter.<slot>.<blur_x|blur_y|strength (%)|angle|distance|brightness|contrast|saturation|hue> (a number of the object's filter at that place, 0 the first; ADR 0092), value (px, %, °), frame?, layer?} (colour properties of several styles compose into Advanced, ADR 0056)", true, set_key as crate::RunFn),
         c("motion.remove_key", "Remove Property Keyframe", "", None, "{property? (default: every property), frame?, layer?}", true, remove_key),
-        c("motion.set_ease", "Property Ease", "", None, "{easing, property? (default: every property), frame? (inside the segment), layer?}", true, set_ease),
-        c("motion.info", "Motion Tween", "", None, "{layer?, frame?} → the span's properties, keys, eases and values at the frame, its motion path and where the object is", false, info),
+        c("motion.set_ease", "Property Ease", "", None, "{easing (as timeline.set_easing takes it, saved eases too), property? (default: every property), frame? (inside the segment), layer?}", true, set_ease),
+        c("motion.info", "Motion Tween", "", None, "{layer?, frame?} → the span's properties, keys, eases and values at the frame, its motion path, its anchors pinned to frames (pins) and where the object is", false, info),
         c("motion.set_path", "Edit Motion Path", "", None, "{d: SVG path data in stage space (its first subpath; ends are the start and end positions), layer?, frame?}", true, set_path),
         c("motion.clear_path", "Remove Motion Path", "", None, "{layer?, frame?}: back to the straight path the X/Y curves trace", true, clear_path),
         c("motion.orient", "Orient to Path", "", None, "{orient: bool, layer?, frame?}: turn the object as its motion path turns", true, orient),
@@ -29,6 +38,8 @@ pub fn specs() -> Vec<CommandSpec> {
         c("motion.delete_points", "Delete Motion Path Points", "", None, "{anchors: [index, ..] (as motion.info lists them; the ends stay), layer?, frame?}: the path refits through the rest", true, delete_points),
         c("motion.convert_point", "Convert Motion Path Point", "", None, "{anchor, smooth: bool, layer?, frame?}: smooth (handles in line) or corner (handles on the anchor)", true, convert_point),
         c("motion.move_path", "Move Motion Path", "", None, "{dx, dy, layer?, frame?}: the whole path with its object, keeping the timing", true, move_path),
+        c("motion.pin_point", "Pin Motion Path Point", "", None, "{anchor? (default: a new anchor where the object is), frame? (the frame to pin it to, between the first and last position keys), layer?}: the object passes the anchor exactly on that frame → {anchor, frame, pins}", true, pin_point),
+        c("motion.unpin_point", "Unpin Motion Path Point", "", None, "{anchor? | frame?, layer?}: the anchor shapes the path only again; the X/Y keys of its frame go → {anchor, frame, pins}", true, unpin_point),
     ]
 }
 
@@ -68,7 +79,7 @@ pub(crate) fn begin_edit(layer: LayerId, kf: &mut Keyframe, frame: u32) -> Optio
 /// the base back. On the span's first frame a property without keys changes the base itself.
 pub(crate) fn finish_edit(s: &mut Session, e: MotionEdit) {
     let scene = s.scene;
-    let Some(layer) = s.doc.timeline_mut(scene).layer_mut(e.layer) else { return };
+    let Some(layer) = crate::editing::edited_mut(&mut s.doc, scene, &s.editing).ok().and_then(|tl| tl.layer_mut(e.layer)) else { return };
     let Some(kf) = layer.keyframe_starting_at(e.start).and_then(|i| layer.keyframe_mut(i)) else { return };
     let Some(idx) = kf.elements.iter().position(|x| x.id == e.target) else { return };
     let Some(after) = kf.elements.get(idx).map(|x| (**x).clone()) else { return };
@@ -104,7 +115,7 @@ pub(crate) fn finish_edit(s: &mut Session, e: MotionEdit) {
         let v = was.get(p) + d;
         if e.offset == 0 && m.track(p).is_none() {
             new_base.set(p, v);
-            if matches!(p, Property::Alpha | Property::Tint) {
+            if p.style().is_some() {
                 base_color = true;
             } else {
                 base_xf = true;
@@ -113,9 +124,13 @@ pub(crate) fn finish_edit(s: &mut Session, e: MotionEdit) {
             m.set_key(p, e.offset, v, base_props.get(p));
         }
     }
-    let tracks_xf = m.tracks.iter().any(|t| !matches!(t.property, Property::Alpha | Property::Tint));
-    let tracks_color = m.tracks.iter().any(|t| matches!(t.property, Property::Alpha | Property::Tint));
+    let tracks_xf = m.tracks.iter().any(|t| t.property.is_transform());
+    let tracks_color = m.tracks.iter().any(|t| t.property.style().is_some());
+    let filters = key_filters(m, &e, &after);
     let mut base = after;
+    if let (Some(f), ElementKind::Symbol { filters: slot, .. }) = (filters, &mut base.kind) {
+        *slot = f;
+    }
     // Exact where nothing is keyed on the first frame: the edited object is the new base.
     base.transform = match (base_xf, e.offset == 0 && !tracks_xf) {
         (true, true) => base.transform,
@@ -124,27 +139,107 @@ pub(crate) fn finish_edit(s: &mut Session, e: MotionEdit) {
     };
     base.color = match (base_color, e.offset == 0 && !tracks_color) {
         (true, true) => base.color,
-        (true, false) => ColorEffect { alpha: (new_base.get(Property::Alpha) / 100.0).clamp(0.0, 1.0), tint: base.color.tint, tint_amount: (new_base.get(Property::Tint) / 100.0).clamp(0.0, 1.0) },
-        (false, _) => ColorEffect { tint: base.color.tint, ..e.base.color },
+        // The edit's style, from the new values (ADR 0056).
+        (true, false) => new_base.color_effect(&[base.color.style()]),
+        (false, _) => e.base.color,
     };
     if let Some(slot) = kf.elements.get_mut(idx) {
         *slot = Arc::new(base);
     }
 }
 
-/// Most bends [`move_on_path`] makes to land the object where it was put; each takes 15–35%
-/// off the miss on typical paths (the path's length changes as it bends, sliding the object).
+/// The filters of an edited target (ADR 0092). The command saw them as they look at the
+/// playhead (`e.before`) and left them as `after` has them. When the list kept its shape (the
+/// same kinds in the same order), each number it changed becomes a key at the playhead (on the
+/// span's first frame, an untracked number changes the object's own), and the tracked numbers
+/// keep the object's own values underneath. When the shape changed (filters reordered, removed
+/// or added), each filter is found again by what it holds, its tracks go where it went, and
+/// those of filters that went go too. The base's new list, or `None` when there are no filters
+/// to look after.
+fn key_filters(m: &mut MotionTween, e: &MotionEdit, after: &Element) -> Option<Vec<FilterEntry>> {
+    let list = |el: &Element| match &el.kind {
+        ElementKind::Symbol { filters, .. } => Some(filters.clone()),
+        _ => None,
+    };
+    let (before, base, mut now) = (list(&e.before)?, list(&e.base)?, list(after)?);
+    if !anicraft_doc::filters_pair_up(&before, &now) {
+        // Where each filter went: the first one left that holds the same.
+        let mut taken = vec![false; now.len()];
+        let map: Vec<Option<usize>> = before
+            .iter()
+            .map(|b| {
+                let i = now.iter().enumerate().position(|(i, n)| !taken.get(i).copied().unwrap_or(true) && n.filter == b.filter)?;
+                if let Some(t) = taken.get_mut(i) {
+                    *t = true;
+                }
+                Some(i)
+            })
+            .collect();
+        m.remap_filters(&map);
+        // A filter that moved is the base's underneath (with its switch as the edit left it),
+        // not the playhead's.
+        for (old, new) in map.iter().enumerate() {
+            if let (Some(n), Some(b)) = (new, base.get(old))
+                && let Some(slot) = now.get_mut(*n)
+            {
+                let enabled = slot.enabled;
+                *slot = FilterEntry { enabled, ..b.clone() };
+            }
+        }
+        return Some(now);
+    }
+    for (slot, (was, is)) in before.iter().zip(&now).enumerate().take(usize::from(anicraft_doc::MAX_FILTER_SLOTS)) {
+        for &param in is.filter.params() {
+            let p = Property::Filter(anicraft_doc::FilterProp { slot: slot as u8, param });
+            let (Some(v0), Some(v1)) = (was.filter.param(param), is.filter.param(param)) else { continue };
+            if (v1 - v0).abs() > 1e-4 && !(e.offset == 0 && m.track(p).is_none()) {
+                let own = base.get(slot).and_then(|b| b.filter.param(param)).unwrap_or(v0);
+                m.set_key(p, e.offset, v1, own);
+            }
+        }
+    }
+    // Tracked numbers: the object's own underneath (the curves give the rest).
+    for t in &m.tracks {
+        if let Some(f) = t.property.filter()
+            && let (Some(slot), Some(own)) = (now.get_mut(usize::from(f.slot)), base.get(usize::from(f.slot)).and_then(|b| b.filter.param(f.param)))
+        {
+            slot.filter.set_param(f.param, own);
+        }
+    }
+    Some(now)
+}
+
+/// Most bends [`move_on_path`] makes to land the object where it was put off the path; each
+/// takes 15–35% off the miss on typical paths (the path's length changes as it bends, sliding the
+/// object).
 const BEND_STEPS: usize = 48;
 
-/// The object on a motion path was moved by `d` at `offset`: at or before the first position
-/// key the path's start moves, at or after the last its end, in between the path bends so it
-/// passes where the object was put (a few bends, as the path's length changes with each);
-/// without position keys the whole path moves.
+/// The object on a motion path was moved by `d` at `offset` (ADR 0049): the anchor pinned to
+/// that frame moves with it (before the first position key, the start); after the last position
+/// key the path carries on to where it was put; in between, a new anchor where the object is gets
+/// pinned to the frame and moved. Where the object is off the path (an overshooting ease) the
+/// path bends instead (ADR 0030); without position keys the whole path moves.
 fn move_on_path(m: &mut MotionTween, base: &Props, offset: u32, d: Vec2, last: u32) {
     let Some(mut path) = m.path.clone() else { return };
-    let f = offset as f32;
     match m.position_range() {
-        Some((f0, f1)) if f1 > f0 && offset > f0 && offset < f1 => {
+        Some((f0, f1)) if f1 > f0 => {
+            let pinned = m.pinned_anchors(base).into_iter().find(|p| p.frame == offset).map(|p| p.anchor as usize);
+            if let Some(a) = pinned.or((offset < f0).then_some(0)) {
+                m.move_anchor(a, d, base, last);
+                return;
+            }
+            if offset > f1 {
+                let end = anicraft_doc::motion::path_ends(&path).map(|(_, b)| b).unwrap_or_default();
+                if !m.extend_to(offset, end + d, base) {
+                    m.move_anchor(path.cmds.len().saturating_sub(1), d, base, last);
+                }
+                return;
+            }
+            if let Ok(a) = m.pin_here(offset, base) {
+                m.move_anchor(a, d, base, last);
+                return;
+            }
+            let f = offset as f32;
             let Some(target) = m.on_path(base).map(|op| op.point(f) + d) else { return };
             let mut trial = m.clone();
             for _ in 0..BEND_STEPS {
@@ -159,10 +254,6 @@ fn move_on_path(m: &mut MotionTween, base: &Props, offset: u32, d: Vec2, last: u
                 }
                 trial.path = Some(path.clone());
             }
-        }
-        Some((f0, f1)) if f1 > f0 => {
-            let anchor = if offset <= f0 { 0 } else { path.cmds.len().saturating_sub(1) };
-            path.move_anchor(anchor, d);
         }
         _ => path = path.transformed(&Affine::translate(d.x, d.y)),
     }
@@ -182,7 +273,7 @@ fn set_path(s: &mut Session, p: &Value) -> Result<Value> {
     let path = anicraft_geom::svg::parse_path_data(d).map_err(|e| EngineError::Param(format!("param 'd': {e}")))?;
     let (kf, _) = motion_span(s, p)?;
     let base = base_of(kf)?;
-    let last = kf.duration.saturating_sub(1);
+    let (start, last) = (kf.start, kf.duration.saturating_sub(1));
     let m = kf.motion.as_mut().ok_or_else(|| EngineError::State("no motion tween here".into()))?;
     if last == 0 && m.position_range().is_none_or(|(a, b)| a == b) {
         return Err(EngineError::State("a one-frame span has no room to move along a path: make the span longer first".into()));
@@ -190,33 +281,61 @@ fn set_path(s: &mut Session, p: &Value) -> Result<Value> {
     if !m.set_path(&path, &base, last) {
         return Err(EngineError::Param("param 'd' needs a segment of some length, with finite points within ±1000000".into()));
     }
-    Ok(path_summary(m))
+    Ok(path_summary(m, start, &base))
 }
 
-fn path_summary(m: &MotionTween) -> Value {
-    let Some(path) = &m.path else { return json!({"path": null, "orient": m.orient}) };
+fn path_summary(m: &MotionTween, start: u32, base: &Props) -> Value {
+    let pins = pins_json(m, start, base);
+    let Some(path) = &m.path else { return json!({"path": null, "orient": m.orient, "pins": pins}) };
     let len = anicraft_geom::walk::CurveWalk::new(path).map_or(0.0, |w| w.length());
     let (a, b) = anicraft_doc::motion::path_ends(path).unwrap_or_default();
     // Anchor `i` is path command `i` (a motion path is a move and cubics).
     let anchors: Vec<[f32; 2]> = path.anchors().into_iter().map(|(_, q)| [q.x, q.y]).collect();
-    json!({"path": path.to_svg(), "segments": path.cmds.len().saturating_sub(1), "length": len, "start": [a.x, a.y], "end": [b.x, b.y], "anchors": anchors, "orient": m.orient})
+    json!({"path": path.to_svg(), "segments": path.cmds.len().saturating_sub(1), "length": len, "start": [a.x, a.y], "end": [b.x, b.y], "anchors": anchors, "orient": m.orient, "pins": pins})
+}
+
+/// The anchors tied to frames (ADR 0049), ends included: `{anchor, frame, end, at}`, frames
+/// counted from the timeline's start.
+fn pins_json(m: &MotionTween, start: u32, base: &Props) -> Value {
+    let path = m.path.clone().or_else(|| m.path_from_tracks(base));
+    let pins = m.pinned_anchors(base);
+    let n = pins.len();
+    let v: Vec<Value> = pins
+        .iter()
+        .enumerate()
+        .map(|(i, q)| {
+            let at = path.as_ref().and_then(|p| p.point(q.anchor as usize, anicraft_geom::edit::ANCHOR)).map(|v| json!([v.x, v.y]));
+            json!({"anchor": q.anchor, "frame": start + q.frame, "end": i == 0 || i + 1 == n, "at": at})
+        })
+        .collect();
+    Value::Array(v)
 }
 
 /// Edits the motion path at the target frame with `edit`: the tween's own path, or the straight
-/// one its X/Y curves trace (which the edit makes its own, as on the stage). The ends' keys stay
-/// unless the edit moved an end, so the timing is kept. Returns what `edit` returned and the
-/// path's summary.
-fn edit_path<T>(s: &mut Session, p: &Value, edit: impl FnOnce(&mut anicraft_geom::Path) -> Result<T>) -> Result<(T, Value)> {
+/// one its X/Y curves trace (which the edit makes its own, as on the stage, its position keys
+/// pinned to their anchors). The ends' and pins' keys stay unless the edit moved their anchors,
+/// so the timing is kept. Returns what `edit` returned and the path's summary.
+fn edit_path<T>(s: &mut Session, p: &Value, edit: impl FnOnce(&mut MotionTween) -> Result<T>) -> Result<(T, Value)> {
     let (kf, _) = motion_span(s, p)?;
     let base = base_of(kf)?;
-    let last = kf.duration.saturating_sub(1);
+    let (start, last) = (kf.start, kf.duration.saturating_sub(1));
     let m = kf.motion.as_mut().ok_or_else(|| EngineError::State("no motion tween here".into()))?;
-    let mut path = m.path.clone().or_else(|| m.path_from_tracks(&base)).ok_or_else(|| EngineError::State("the object doesn't move yet, so it has no path: move it at a later frame of the tween first".into()))?;
-    let out = edit(&mut path)?;
+    if m.path.is_none() {
+        let (path, pins) = m.path_and_pins_from_tracks(&base).ok_or_else(|| EngineError::State("the object doesn't move yet, so it has no path: move it at a later frame of the tween first".into()))?;
+        m.path = Some(path);
+        m.pins = pins;
+    }
+    let out = edit(m)?;
+    let path = m.path.clone().ok_or_else(|| EngineError::State("the motion path went away".into()))?;
     if !m.set_path(&path, &base, last) {
         return Err(EngineError::State("that would leave the motion path with no length".into()));
     }
-    Ok((out, path_summary(m)))
+    Ok((out, path_summary(m, start, &base)))
+}
+
+/// The motion path being edited (there is one inside [`edit_path`]).
+fn path_mut(m: &mut MotionTween) -> Result<&mut anicraft_geom::Path> {
+    m.path.as_mut().ok_or_else(|| EngineError::State("no motion path here".into()))
 }
 
 /// An anchor index param, checked against the path.
@@ -242,7 +361,8 @@ fn add_point(s: &mut Session, p: &Value) -> Result<Value> {
     if !(0.0..=1000.0).contains(&slop) {
         return Err(EngineError::Param("param 'slop' must be between 0 and 1000".into()));
     }
-    let (anchor, mut v) = edit_path(s, p, |path| {
+    let (anchor, mut v) = edit_path(s, p, |m| {
+        let path = path_mut(m)?;
         if path.cmds.len() > anicraft_doc::motion::MAX_PATH_SEGMENTS {
             return Err(EngineError::State(format!("a motion path holds at most {} segments", anicraft_doc::motion::MAX_PATH_SEGMENTS)));
         }
@@ -268,7 +388,8 @@ fn add_point(s: &mut Session, p: &Value) -> Result<Value> {
         if !(1e-3..=1.0 - 1e-3).contains(&t) {
             return Err(EngineError::State("there is already an anchor there".into()));
         }
-        if !path.split_segment(cmd, t) {
+        // Pins after it stay on their anchors.
+        if !m.split_path(cmd, t) {
             return Err(EngineError::State("cannot add a point there".into()));
         }
         // The new anchor ends the first half.
@@ -283,8 +404,8 @@ fn delete_points(s: &mut Session, p: &Value) -> Result<Value> {
     if wanted.is_empty() {
         return Err(EngineError::Param("param 'anchors' lists no anchor".into()));
     }
-    let ((deleted, kept_ends), mut v) = edit_path(s, p, |path| {
-        let n = path.cmds.len();
+    let ((deleted, kept_ends, unpinned), mut v) = edit_path(s, p, |m| {
+        let n = path_mut(m)?.cmds.len();
         let mut set = std::collections::BTreeSet::new();
         for &i in wanted.iter().take(100_000) {
             match usize::try_from(i).ok().filter(|i| *i < n) {
@@ -296,23 +417,28 @@ fn delete_points(s: &mut Session, p: &Value) -> Result<Value> {
         if set.is_empty() {
             return Err(EngineError::State("the ends of a motion path can't be deleted: they are where the motion starts and ends. Drag them to move them, or Straighten the path".into()));
         }
-        // Last first, so the indices still to go stay where they were.
-        let mut deleted = 0;
+        // Last first, so the indices still to go stay where they were. A pinned anchor's pin
+        // goes with it (and its X/Y keys).
+        let (mut deleted, mut unpinned) = (0, 0);
         for i in set.into_iter().rev() {
-            if path.merge_at(i) {
+            let pinned = m.live_pins().iter().any(|q| q.anchor as usize == i);
+            if m.delete_anchor(i) {
                 deleted += 1;
+                unpinned += usize::from(pinned);
             }
         }
-        Ok((deleted, ends))
+        Ok((deleted, ends, unpinned))
     })?;
     v["deleted"] = json!(deleted);
     v["kept_ends"] = json!(kept_ends);
+    v["unpinned"] = json!(unpinned);
     Ok(v)
 }
 
 fn convert_point(s: &mut Session, p: &Value) -> Result<Value> {
     let smooth = opt_bool(p, "smooth")?.ok_or_else(|| EngineError::Param("param 'smooth' is required (true: smooth, false: corner)".into()))?;
-    let (changed, mut v) = edit_path(s, p, |path| {
+    let (changed, mut v) = edit_path(s, p, |m| {
+        let path = path_mut(m)?;
         let a = anchor_index(p, "anchor", path)?;
         Ok(if smooth { path.make_smooth(a) } else { path.make_corner(a) })
     })?;
@@ -326,6 +452,7 @@ fn move_path(s: &mut Session, p: &Value) -> Result<Value> {
         return Err(EngineError::Param("params 'dx' and 'dy' must be finite".into()));
     }
     let (kf, _) = motion_span(s, p)?;
+    let start = kf.start;
     let i = kf.motion.as_ref().and_then(|m| m.target_index(&kf.elements)).ok_or_else(|| EngineError::State("the motion tween's object is no longer on its keyframe".into()))?;
     let m = kf.motion.as_mut().ok_or_else(|| EngineError::State("no motion tween here".into()))?;
     if !m.translate(d) {
@@ -337,7 +464,8 @@ fn move_path(s: &mut Session, p: &Value) -> Result<Value> {
         el.transform = Affine::translate(d.x, d.y).mul(&el.transform);
         *slot = Arc::new(el);
     }
-    let mut v = kf.motion.as_ref().map_or(Value::Null, path_summary);
+    let base = base_of(kf)?;
+    let mut v = kf.motion.as_ref().map_or(Value::Null, |m| path_summary(m, start, &base));
     v["moved"] = json!([d.x, d.y]);
     Ok(v)
 }
@@ -349,8 +477,10 @@ fn clear_path(s: &mut Session, p: &Value) -> Result<Value> {
     if m.path.take().is_none() {
         return Err(EngineError::State(format!("the motion tween at frame {} has no motion path to remove", frame + 1)));
     }
-    // Orient to path has nothing left to turn with.
+    // Orient to path has nothing left to turn with, and pins nothing to pin. Their keys stay:
+    // the straight path runs through them.
     m.orient = false;
+    m.pins.clear();
     Ok(json!({"cleared": true}))
 }
 
@@ -358,7 +488,7 @@ fn orient(s: &mut Session, p: &Value) -> Result<Value> {
     let on = opt_bool(p, "orient")?.ok_or_else(|| EngineError::Param("param 'orient' is required (true or false)".into()))?;
     let (kf, _) = motion_span(s, p)?;
     let base = base_of(kf)?;
-    let last = kf.duration.saturating_sub(1);
+    let (start, last) = (kf.start, kf.duration.saturating_sub(1));
     let m = kf.motion.as_mut().ok_or_else(|| EngineError::State("no motion tween here".into()))?;
     // The straight path the X/Y curves trace becomes the path to turn along.
     let mut created = false;
@@ -367,8 +497,81 @@ fn orient(s: &mut Session, p: &Value) -> Result<Value> {
         created = m.set_path(&path, &base, last);
     }
     m.orient = on;
-    let mut v = path_summary(m);
+    let mut v = path_summary(m, start, &base);
     v["path_created"] = json!(created);
+    Ok(v)
+}
+
+/// Why a pin can't be made, in words an artist (or an agent) can act on. `start` is the span's
+/// first frame (messages count frames from 1, as the timeline does).
+fn pin_error(e: PinError, start: u32, frame: u32) -> EngineError {
+    let shown = |f: u32| start + f + 1;
+    match e {
+        PinError::NoPath => EngineError::State("the object doesn't move yet, so it has no path: move it at a later frame of the tween first".into()),
+        PinError::NoAnchor => EngineError::Param("no such anchor on this motion path (motion.info lists them, from 0 at the start)".into()),
+        PinError::End => EngineError::State("the ends of a motion path are always pinned, to the first and last position keys: move the object on those frames to move them".into()),
+        PinError::Outside(f0, f1) => EngineError::State(format!("frame {} is outside the motion (frames {} to {}): move the object there to carry the path on", shown(frame), shown(f0), shown(f1))),
+        PinError::Order(q) => EngineError::State(format!("anchor {} is pinned to frame {}: pins keep the path's order, a later frame on a later anchor", q.anchor, shown(q.frame))),
+        PinError::OffPath => EngineError::State(format!("at frame {} the object is beyond an end of the path (its ease overshoots): pin an anchor of the path instead", shown(frame))),
+        PinError::Full => EngineError::State(format!("a motion path holds at most {} segments", anicraft_doc::motion::MAX_PATH_SEGMENTS)),
+    }
+}
+
+/// A straight motion's path becomes the tween's own, its position keys pinned to its anchors
+/// (nothing moves).
+fn own_path(m: &mut MotionTween, base: &Props, last: u32) -> std::result::Result<(), PinError> {
+    if m.path.is_none() {
+        let (path, pins) = m.path_and_pins_from_tracks(base).ok_or(PinError::NoPath)?;
+        m.path = Some(path.clone());
+        m.pins = pins;
+        m.set_path(&path, base, last);
+    }
+    Ok(())
+}
+
+fn pin_point(s: &mut Session, p: &Value) -> Result<Value> {
+    let anchor = opt_u64(p, "anchor")?.map(|a| usize::try_from(a).unwrap_or(usize::MAX));
+    let (kf, offset) = motion_span(s, p)?;
+    let base = base_of(kf)?;
+    let (start, last) = (kf.start, kf.duration.saturating_sub(1));
+    let m = kf.motion.as_mut().ok_or_else(|| EngineError::State("no motion tween here".into()))?;
+    own_path(m, &base, last).map_err(|e| pin_error(e, start, offset))?;
+    let a = match anchor {
+        Some(a) => m.pin(a, offset, &base).map(|_| a),
+        None => m.pin_here(offset, &base),
+    }
+    .map_err(|e| pin_error(e, start, offset))?;
+    let mut v = path_summary(m, start, &base);
+    v["anchor"] = json!(a);
+    v["frame"] = json!(start + offset);
+    Ok(v)
+}
+
+fn unpin_point(s: &mut Session, p: &Value) -> Result<Value> {
+    let anchor = opt_u64(p, "anchor")?;
+    let (kf, offset) = motion_span(s, p)?;
+    let base = base_of(kf)?;
+    let (start, last) = (kf.start, kf.duration.saturating_sub(1));
+    let m = kf.motion.as_mut().ok_or_else(|| EngineError::State("no motion tween here".into()))?;
+    own_path(m, &base, last).map_err(|e| pin_error(e, start, offset))?;
+    let all = m.pinned_anchors(&base);
+    let found: Option<Pin> = match anchor {
+        Some(a) => all.iter().find(|q| u64::from(q.anchor) == a).copied(),
+        None => all.iter().find(|q| q.frame == offset).copied(),
+    };
+    let Some(pin) = found else {
+        return Err(EngineError::State(match anchor {
+            Some(a) => format!("anchor {a} isn't pinned to a frame"),
+            None => format!("no anchor is pinned to frame {}", start + offset + 1),
+        }));
+    };
+    if all.first() == Some(&pin) || all.last() == Some(&pin) {
+        return Err(pin_error(PinError::End, start, pin.frame));
+    }
+    m.unpin(pin.frame);
+    let mut v = path_summary(m, start, &base);
+    v["anchor"] = json!(pin.anchor);
+    v["frame"] = json!(start + pin.frame);
     Ok(v)
 }
 
@@ -382,9 +585,23 @@ pub(crate) fn key_all_at(layer: &mut Layer, frame: u32) -> bool {
     }
     let offset = frame - kf.start;
     let Some(m) = kf.motion.as_mut() else { return false };
-    let Some(base) = m.target_index(&kf.elements).and_then(|t| kf.elements.get(t)).map(|e| Props::of(e)) else { return true };
+    let Some(target) = m.target_index(&kf.elements).and_then(|t| kf.elements.get(t)).cloned() else { return true };
+    let base = Props::of(&target);
     let now = m.props_at(&base, offset as f32);
+    // The filters' numbers too (ADR 0092), as they are on that frame.
+    let at = m.apply(&target, offset as f32);
+    for p in filter_properties(&target) {
+        if let (Some(v), Some(own)) = (own_value(&at, p), own_value(&target, p)) {
+            m.set_key(p, offset, v, own);
+        }
+    }
+    // On a motion path the frame's place is an anchor pinned to it (ADR 0049), where the
+    // object is: nothing moves on this frame.
+    let pinned = m.path.is_some() && m.pin_here(offset, &base).is_ok();
     for p in Property::ALL {
+        if pinned && matches!(p, Property::X | Property::Y) {
+            continue;
+        }
         m.set_key(p, offset, now.get(p), base.get(p));
     }
     true
@@ -411,7 +628,7 @@ pub(crate) fn create(s: &mut Session, p: &Value) -> Result<Value> {
     let (lid, frame) = target(s, p)?;
     let lid = lid.unwrap_or(s.layer);
     let (start, ids) = {
-        let tl = s.doc.timeline(s.scene);
+        let tl = s.timeline();
         let layer = tl.layer(lid).ok_or_else(|| EngineError::State(format!("no layer with id {}", lid.0)))?;
         if layer.kind == LayerKind::Folder {
             return Err(EngineError::State("a folder holds layers, not frames; pick a layer inside it".into()));
@@ -489,8 +706,8 @@ fn property(p: &Value) -> Result<Option<Property>> {
     match opt_str(p, "property")? {
         None => Ok(None),
         Some(k) => Property::from_key(k).map(Some).ok_or_else(|| {
-            let all: Vec<&str> = Property::ALL.iter().map(|p| p.key()).collect();
-            EngineError::Param(format!("unknown property '{k}' ({})", all.join(", ")))
+            let all: Vec<String> = Property::ALL.iter().map(|p| p.key().into_owned()).collect();
+            EngineError::Param(format!("unknown property '{k}' ({}, or filter.<slot>.<blur_x|blur_y|strength|angle|distance|brightness|contrast|saturation|hue>, slot 0 to 15)", all.join(", ")))
         }),
     }
 }
@@ -503,11 +720,33 @@ fn set_key(s: &mut Session, p: &Value) -> Result<Value> {
         return Err(EngineError::Param(format!("{} must be between {} and {} {}", prop.label(), r.start(), r.end(), prop.unit())));
     }
     let (kf, offset) = motion_span(s, p)?;
-    let base = kf.motion.as_ref().and_then(|m| m.target_index(&kf.elements)).and_then(|i| kf.elements.get(i)).map(|e| Props::of(e));
-    let base = base.ok_or_else(|| EngineError::State("the motion tween's object is no longer on its keyframe".into()))?;
-    let start = kf.start;
+    let target = kf.motion.as_ref().and_then(|m| m.target_index(&kf.elements)).and_then(|i| kf.elements.get(i)).cloned();
+    let target = target.ok_or_else(|| EngineError::State("the motion tween's object is no longer on its keyframe".into()))?;
+    let base = Props::of(&target);
+    let own = own_value(&target, prop).ok_or_else(|| match prop.filter() {
+        Some(f) => EngineError::State(match &target.kind {
+            ElementKind::Symbol { filters, .. } => match filters.get(usize::from(f.slot)) {
+                Some(e) => format!("filter {} of the tween's object is a {}, which has no {}", f.slot, e.filter.label(), f.param.label()),
+                None => format!("the tween's object has no filter {} (it has {}; 0 is the first)", f.slot, filters.len()),
+            },
+            _ => "filters apply to movie clip and button instances: the tween's object has none".into(),
+        }),
+        None => EngineError::State("the motion tween's object has no such property".into()),
+    })?;
+    let (start, last) = (kf.start, kf.duration.saturating_sub(1));
     let m = kf.motion.as_mut().ok_or_else(|| EngineError::State("no motion tween here".into()))?;
-    m.set_key(prop, offset, value, base.get(prop));
+    // On a path, the X/Y keys of a pinned frame are its anchor's place: setting one moves the
+    // anchor (ADR 0049).
+    let pinned = matches!(prop, Property::X | Property::Y).then(|| m.pinned_anchors(&base).into_iter().find(|q| q.frame == offset)).flatten().filter(|_| m.path.is_some());
+    if let Some(pin) = pinned {
+        let at = m.path.as_ref().and_then(|p| p.point(pin.anchor as usize, anicraft_geom::edit::ANCHOR)).unwrap_or_default();
+        let d = if prop == Property::X { Vec2::new(value - at.x, 0.0) } else { Vec2::new(0.0, value - at.y) };
+        if d != Vec2::ZERO && !m.move_anchor(pin.anchor as usize, d, &base, last) {
+            return Err(EngineError::Param(format!("{} must keep the motion path within ±1000000 px", prop.label())));
+        }
+        return Ok(json!({"property": prop.key(), "frame": start + offset, "value": value, "anchor": pin.anchor}));
+    }
+    m.set_key(prop, offset, value, own);
     Ok(json!({"property": prop.key(), "frame": start + offset, "value": value}))
 }
 
@@ -516,53 +755,85 @@ fn remove_key(s: &mut Session, p: &Value) -> Result<Value> {
     let (kf, offset) = motion_span(s, p)?;
     let start = kf.start;
     let m = kf.motion.as_mut().ok_or_else(|| EngineError::State("no motion tween here".into()))?;
-    let removed: Vec<&str> = Property::ALL.into_iter().filter(|x| only.is_none_or(|o| o == *x)).filter(|x| m.remove_key(*x, offset)).map(Property::key).collect();
+    // Removing a pinned frame's X or Y key lets the pin go, with both keys (ADR 0049).
+    let pin = m.live_pins().into_iter().find(|q| q.frame == offset).filter(|_| only.is_none_or(|o| matches!(o, Property::X | Property::Y)));
+    let keyed: Vec<Property> = m.tracks.iter().map(|t| t.property).collect();
+    let mut removed: Vec<std::borrow::Cow<'static, str>> = keyed.into_iter().filter(|x| only.is_none_or(|o| o == *x)).filter(|x| m.remove_key(*x, offset)).map(Property::key).collect();
+    if pin.is_some() {
+        for k in [Property::X.key(), Property::Y.key()] {
+            if !removed.contains(&k) {
+                removed.push(k);
+            }
+        }
+    }
     if removed.is_empty() {
         return Err(EngineError::State(format!("there is no property keyframe at frame {}", start + offset + 1)));
     }
-    Ok(json!({"removed": removed, "frame": start + offset}))
+    Ok(json!({"removed": removed, "frame": start + offset, "unpinned": pin.map(|q| q.anchor)}))
 }
 
 fn set_ease(s: &mut Session, p: &Value) -> Result<Value> {
-    let easing = opt_easing(p, "easing")?.ok_or_else(|| EngineError::Param("param 'easing' is required".into()))?;
+    let easing = opt_easing_in(s, p, "easing")?.ok_or_else(|| EngineError::Param("param 'easing' is required".into()))?;
     let only = property(p)?;
+    let label = easing.label();
     let (kf, offset) = motion_span(s, p)?;
     let start = kf.start;
     let m = kf.motion.as_mut().ok_or_else(|| EngineError::State("no motion tween here".into()))?;
     let mut set = Vec::new();
     for t in m.tracks.iter_mut().filter(|t| only.is_none_or(|o| o == t.property)) {
         if let Some(k) = t.segment_at(offset).and_then(|i| t.keys.get_mut(i)) {
-            k.ease = easing;
+            k.ease = easing.clone();
             set.push(t.property.key());
         }
     }
     if set.is_empty() {
         return Err(EngineError::State(format!("frame {} is not between two property keyframes{}", start + offset + 1, only.map_or_else(String::new, |o| format!(" of {}", o.label())))));
     }
-    Ok(json!({"easing": easing.label(), "properties": set}))
+    Ok(json!({"easing": label, "properties": set}))
 }
 
 fn info(s: &mut Session, p: &Value) -> Result<Value> {
     let (lid, frame) = target(s, p)?;
     let lid = lid.unwrap_or(s.layer);
-    let layer = s.doc.timeline(s.scene).layer(lid).ok_or_else(|| EngineError::State(format!("no layer with id {}", lid.0)))?;
+    let layer = s.timeline().layer(lid).ok_or_else(|| EngineError::State(format!("no layer with id {}", lid.0)))?;
     let kf = layer.keyframe_at(frame).ok_or_else(|| EngineError::State(format!("frame {} is empty on this layer", frame + 1)))?;
     let m = kf.motion.as_ref().ok_or_else(|| EngineError::State(format!("frame {} is not in a motion tween", frame + 1)))?;
-    let base = m.target_index(&kf.elements).and_then(|i| kf.elements.get(i)).map(|e| Props::of(e));
+    let target = m.target_index(&kf.elements).and_then(|i| kf.elements.get(i));
+    let base = target.map(|e| Props::of(e));
     let now = base.map(|b| m.props_at(&b, (frame - kf.start) as f32));
+    let filter_of = |slot: u8| match target.map(|e| &e.kind) {
+        Some(ElementKind::Symbol { filters, .. }) => filters.get(usize::from(slot)).map(|e| e.filter.label()),
+        _ => None,
+    };
     let tracks: Vec<Value> = m
         .tracks
         .iter()
         .map(|t| {
-            let keys: Vec<Value> = t.keys.iter().map(|k| json!({"frame": kf.start + k.frame, "value": k.value, "ease": k.ease.label(), "bezier": k.ease.as_bezier()})).collect();
-            json!({"property": t.property.key(), "label": t.property.label(), "unit": t.property.unit(), "keys": keys})
+            let keys: Vec<Value> = t.keys.iter().map(|k| json!({"frame": kf.start + k.frame, "value": k.value, "ease": k.ease.label(), "easing": easing_json(&k.ease), "bezier": k.ease.as_bezier()})).collect();
+            let mut v = json!({"property": t.property.key(), "label": t.property.label(), "unit": t.property.unit(), "keys": keys});
+            // A filter's number: which filter (ADR 0092); its kind `null` when it isn't there now.
+            if let Some(f) = t.property.filter() {
+                v["filter"] = json!({"slot": f.slot, "kind": filter_of(f.slot)});
+            }
+            v
         })
         .collect();
-    let values: serde_json::Map<String, Value> = Property::ALL.iter().filter_map(|p| now.map(|n| (p.key().to_string(), json!(n.get(*p))))).collect();
+    let mut values: serde_json::Map<String, Value> = Property::ALL.iter().filter_map(|p| now.map(|n| (p.key().into_owned(), json!(n.get(*p))))).collect();
+    // And the filters' numbers at the frame.
+    if let Some(e) = target {
+        let at = m.apply(e, (frame - kf.start) as f32);
+        for p in filter_properties(e) {
+            if let Some(v) = own_value(&at, p) {
+                values.insert(p.key().into_owned(), json!(v));
+            }
+        }
+    }
     // Where the object is (on a motion path the X/Y values are its timing, not its place).
     let position = m.target_index(&kf.elements).and_then(|i| kf.elements.get(i)).map(|e| m.apply(e, (frame - kf.start) as f32).transform.translation()).map(|q| json!([q.x, q.y]));
-    let path = path_summary(m);
+    let path = m.path.as_ref().map(|p| p.to_svg());
     // The anchors point edits address: the path's own, or the straight path's (ADR 0038).
     let anchors: Vec<[f32; 2]> = m.path.clone().or_else(|| base.and_then(|b| m.path_from_tracks(&b))).map(|p| p.anchors().into_iter().map(|(_, q)| [q.x, q.y]).collect()).unwrap_or_default();
-    Ok(json!({"layer": lid.0, "start": kf.start, "frames": kf.duration, "target": m.target.0, "tracks": tracks, "values": values, "position": position, "path": path["path"], "anchors": anchors, "orient": m.orient}))
+    // And those tied to frames, ends included (ADR 0049).
+    let pins = base.map_or(Value::Array(Vec::new()), |b| pins_json(m, kf.start, &b));
+    Ok(json!({"layer": lid.0, "start": kf.start, "frames": kf.duration, "target": m.target.0, "tracks": tracks, "values": values, "position": position, "path": path, "anchors": anchors, "pins": pins, "orient": m.orient}))
 }
