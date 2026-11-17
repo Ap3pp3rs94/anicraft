@@ -381,6 +381,7 @@ dependencies = [
  "boa_engine",
  "craft-html",
  "craft-image-codecs 0.1.0 (git+https://github.com/storytold/craft-libs?rev=f0f4758c01581d79577b9bf5046c06f4e77b1f18)",
+ "craft-lottie",
  "rayon",
  "serde_json",
  "thiserror 2.0.21",
@@ -1309,6 +1310,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "craft-lottie"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=b421e6777343cba6c017295e318624e419b95323#b421e6777343cba6c017295e318624e419b95323"
+dependencies = [
+ "craft-zip",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "craft-media"
 version = "0.1.0"
 source = "git+https://github.com/storytold/craft-libs?rev=f0f4758c01581d79577b9bf5046c06f4e77b1f18#f0f4758c01581d79577b9bf5046c06f4e77b1f18"
@@ -1419,6 +1430,16 @@ dependencies = [
  "quick-xml 0.41.0",
  "serde",
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "craft-zip"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=b421e6777343cba6c017295e318624e419b95323#b421e6777343cba6c017295e318624e419b95323"
+dependencies = [
+ "flate2",
+ "thiserror 2.0.21",
+ "zip",
 ]
 
 [[package]]
