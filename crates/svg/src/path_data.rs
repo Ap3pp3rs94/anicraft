@@ -16,6 +16,13 @@ fn v(p: Point) -> Vec2 {
 
 /// Parses SVG path data into a [`Path`]: icon outlines, `path.d` commands and SVG import.
 pub fn parse_path_data(d: &str) -> Result<Path, String> {
+    // The shared geometry parser permits an implicit origin; SVG and command input must
+    // begin with moveto rather than manufacturing an anchor for malformed drawing commands.
+    if let Some(first) = d.bytes().find(|byte| !matches!(byte, b' ' | b'\t' | b'\r' | b'\n'))
+        && !matches!(first, b'M' | b'm')
+    {
+        return Err("path data must start with moveto".into());
+    }
     let subpaths = parse_path(d).map_err(|e| e.to_string())?;
     let mut path = Path::new();
     for sub in subpaths {
@@ -66,6 +73,16 @@ mod tests {
 
     fn ends(p: &Path) -> Vec<Vec2> {
         p.anchors().into_iter().map(|(_, a)| a).collect()
+    }
+
+    #[test]
+    fn nonempty_paths_require_an_initial_moveto() {
+        for data in ["L10 10", "H10", "V10", "C0 0 1 1 2 2", "Q1 1 2 2", "Z", "  l10 10"] {
+            assert!(parse_path_data(data).is_err(), "accepted drawing command without moveto: {data}");
+        }
+        for data in ["", " \t\r\n", "m1 2 l3 4", " M0 0 L1 1"] {
+            assert!(parse_path_data(data).is_ok(), "rejected valid path: {data:?}");
+        }
     }
 
     #[test]

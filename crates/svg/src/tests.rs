@@ -258,13 +258,13 @@ fn hostile_markup_is_refused_before_parsing() {
         prev = name;
     }
     bomb.push_str("]><svg xmlns=\"http://www.w3.org/2000/svg\"><text>&h;</text></svg>");
-    assert!(matches!(import_with_fonts(bomb.as_bytes(), &fonts), Err(SvgError::Preflight(_))));
+    assert!(matches!(import_with_fonts(bomb.as_bytes(), &fonts), Err(SvgError::Preflight(craft_svg::preflight::Error::Entities))));
     // Groups nested far past any drawing.
     let deep = format!("<svg xmlns=\"http://www.w3.org/2000/svg\">{}{}</svg>", "<g>".repeat(5000), "</g>".repeat(5000));
-    assert!(matches!(import_with_fonts(deep.as_bytes(), &fonts), Err(SvgError::Preflight(_))));
+    assert!(matches!(import_with_fonts(deep.as_bytes(), &fonts), Err(SvgError::Preflight(craft_svg::preflight::Error::TooDeep(_)))));
     // An unpacked SVGZ past the size limit.
     let huge = craft_svg::svgz::compress(&vec![b' '; (64 << 20) + 1]);
-    assert!(matches!(import_with_fonts(&huge, &fonts), Err(SvgError::Preflight(_))));
+    assert!(matches!(import_with_fonts(&huge, &fonts), Err(SvgError::Preflight(craft_svg::preflight::Error::Text(craft_svg::svgz::Error::TooLarge(_))))));
 }
 
 #[test]
