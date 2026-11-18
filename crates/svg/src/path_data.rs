@@ -69,6 +69,14 @@ mod tests {
     }
 
     #[test]
+    fn malformed_tokens_do_not_import_a_truncated_path() {
+        for data in ["@", "M0 0 L1 1 @", "M0 0 L1 1 1e", "M0 0 L1 1 1e9999"] {
+            assert!(parse_path_data(data).is_err(), "accepted malformed path: {data}");
+        }
+        assert!(parse_path_data("M0 0 L1 1 ").is_ok());
+    }
+
+    #[test]
     fn relative_and_shorthand_commands() {
         let p = parse_path_data("m10 10 h5 v5 H10 z m 1,1 l2-2").unwrap();
         assert_eq!(

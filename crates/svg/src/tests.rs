@@ -266,3 +266,10 @@ fn hostile_markup_is_refused_before_parsing() {
     let huge = craft_svg::svgz::compress(&vec![b' '; (64 << 20) + 1]);
     assert!(matches!(import_with_fonts(&huge, &fonts), Err(SvgError::Preflight(_))));
 }
+
+#[test]
+fn colour_rejects_multiple_leading_hashes() {
+    assert!(color("#abc").is_some());
+    assert!(color("##abc").is_none());
+    assert!(color("##aabbcc").is_none());
+}
