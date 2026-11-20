@@ -171,6 +171,7 @@ const MAX_SYMBOLS: usize = 20_000;
 const MAX_LAYERS: usize = 5_000;
 const MAX_FRAME: u32 = 100_000;
 const MAX_BITMAPS: usize = 10_000;
+pub(crate) const MAX_BITMAP_PIXELS: u64 = 256 * 1024 * 1024;
 const MAX_SOUNDS: usize = 10_000;
 const MAX_VIDEOS: usize = 10_000;
 
@@ -252,6 +253,10 @@ struct Builder<'a> {
     language: Language,
     /// Library item name → bitmap id, for the bitmaps that could be read.
     bitmaps: HashMap<String, BitmapId>,
+    /// Total decoded pixels kept across imported bitmaps and video stills.
+    bitmap_pixels: u64,
+    /// Maximum decoded pixels kept across one import.
+    bitmap_pixel_budget: u64,
     /// Library item name → sound id, for the sounds whose file is in the package (ADR 0057).
     sounds: HashMap<String, anicraft_doc::SoundId>,
     /// Library item name -> the still of its first frame, for every video item (`None` when the
@@ -967,6 +972,10 @@ impl<'a> Builder<'a> {
     fn register_bitmaps(&mut self, root: &X) -> Result<(), XflError> {
         for item in craft_xfl::media::Catalog::new(root).bitmaps().take(MAX_BITMAPS) {
             let Some(name) = item.name().filter(|n| !self.bitmaps.contains_key(*n)) else { continue };
+            if self.bitmap_pixels >= self.bitmap_pixel_budget {
+                self.report.skip("bitmaps past the import pixel budget");
+                continue;
+            }
             let mut candidates = Vec::new();
             if let Some(href) = item.href() {
                 candidates.push(craft_xfl::media::library_member(href));
@@ -996,6 +1005,12 @@ impl<'a> Builder<'a> {
             }
             match bitmap {
                 Some(mut b) => {
+                    let pixels = u64::from(b.width).saturating_mul(u64::from(b.height));
+                    if self.bitmap_pixels.saturating_add(pixels) > self.bitmap_pixel_budget {
+                        self.report.skip("bitmaps past the import pixel budget");
+                        continue;
+                    }
+                    self.bitmap_pixels += pixels;
                     b.id = BitmapId(self.doc.alloc_id());
                     // Animate leaves out the default (smoothing on in current versions).
                     b.smoothing = item.allow_smoothing().unwrap_or(true);
@@ -1121,17 +1136,24 @@ impl<'a> Builder<'a> {
             let length = seconds.map(|s| format!(", {:.1} s", s.min(1.0e7))).unwrap_or_default();
             let id = match still {
                 Some(mut b) => {
-                    b.id = BitmapId(self.doc.alloc_id());
-                    let id = b.id;
-                    let folder = name.rsplit_once('/').map(|(f, _)| f);
-                    let path = match folder {
-                        Some(f) => format!("{f}/{}", b.name),
-                        None => b.name.clone(),
-                    };
-                    self.place_in_folder(&path, anicraft_doc::LibraryItem::Bitmap(id));
-                    self.doc.bitmaps.push(Arc::new(b));
-                    self.report.skip_named("videos (first frame kept as a still)", format!("{shown}: Screen Video{length}"));
-                    Some(id)
+                    let pixels = u64::from(b.width).saturating_mul(u64::from(b.height));
+                    if self.bitmap_pixels.saturating_add(pixels) > self.bitmap_pixel_budget {
+                        self.report.skip("bitmaps past the import pixel budget");
+                        None
+                    } else {
+                        self.bitmap_pixels += pixels;
+                        b.id = BitmapId(self.doc.alloc_id());
+                        let id = b.id;
+                        let folder = name.rsplit_once('/').map(|(f, _)| f);
+                        let path = match folder {
+                            Some(f) => format!("{f}/{}", b.name),
+                            None => b.name.clone(),
+                        };
+                        self.place_in_folder(&path, anicraft_doc::LibraryItem::Bitmap(id));
+                        self.doc.bitmaps.push(Arc::new(b));
+                        self.report.skip_named("videos (first frame kept as a still)", format!("{shown}: Screen Video{length}"));
+                        Some(id)
+                    }
                 }
                 None => {
                     let why = match (format, unreadable) {
@@ -1386,6 +1408,15 @@ pub fn import_with_fonts(read: &Reader<'_>, fonts: &Fonts) -> Result<(Document, 
 }
 
 fn import_from<'a>(read: &'a Reader<'a>, fonts: Option<&'a Fonts>) -> Result<(Document, Report), XflError> {
+    import_from_with_budget(read, fonts, MAX_BITMAP_PIXELS)
+}
+
+#[cfg(test)]
+pub(crate) fn import_with_bitmap_budget(read: &Reader<'_>, bitmap_pixel_budget: u64) -> Result<(Document, Report), XflError> {
+    import_from_with_budget(read, None, bitmap_pixel_budget)
+}
+
+fn import_from_with_budget<'a>(read: &'a Reader<'a>, fonts: Option<&'a Fonts>, bitmap_pixel_budget: u64) -> Result<(Document, Report), XflError> {
     let bytes = read("DOMDocument.xml")?.ok_or_else(|| XflError::NotXfl("no DOMDocument.xml".into()))?;
     let parsed = craft_xfl::document::Document::parse(&bytes).map_err(xml::from_craft_error)?;
     let (schema, xml_root) =
@@ -1401,6 +1432,8 @@ fn import_from<'a>(read: &'a Reader<'a>, fonts: Option<&'a Fonts>) -> Result<(Do
         pending: Vec::new(),
         language: Language::ActionScript3,
         bitmaps: HashMap::new(),
+        bitmap_pixels: 0,
+        bitmap_pixel_budget,
         sounds: HashMap::new(),
         videos: HashMap::new(),
         report: Report::default(),
@@ -1525,20 +1558,38 @@ pub fn import_path(path: &std::path::Path) -> Result<(Document, Report), XflErro
         return import_fla(&std::fs::read(path)?);
     }
     let dir = if meta.is_dir() { path.to_path_buf() } else { path.parent().map(std::path::Path::to_path_buf).unwrap_or_default() };
+    let base = if dir.as_os_str().is_empty() { std::path::Path::new(".") } else { dir.as_path() };
+    let canon_dir = std::fs::canonicalize(base)?;
     let read = |p: &str| -> Result<Option<Vec<u8>>, XflError> {
         // Only plain relative paths inside the package.
         // Backslash too: Windows treats it as a separator, so `..\x` would leave the package.
-        if p.split(['/', '\\']).any(|c| c == ".." || c.is_empty()) || p.contains(':') {
+        let parts: Vec<&str> = p.split(['/', '\\']).collect();
+        if parts.is_empty() || p.contains(':') || p.contains('\0') || parts.iter().any(|c| c.is_empty() || *c == "." || *c == "..") {
             return Ok(None);
         }
-        let full = dir.join(p);
-        // Regular files only (a symlink to /dev/zero or a secret is not package content), and
-        // never more than the cap is read, however big the file claims to be.
-        match std::fs::symlink_metadata(&full) {
-            Ok(m) if m.is_file() => {}
-            Ok(_) => return Ok(None),
+        // Regular directories and files only at every component (neither an intermediate directory
+        // symlink nor a symlinked file can escape the package or open /dev/zero), and never more
+        // than the cap is read, however big the file claims to be.
+        let mut full = base.to_path_buf();
+        for (i, part) in parts.iter().enumerate() {
+            full.push(part);
+            let m = match std::fs::symlink_metadata(&full) {
+                Ok(m) => m,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+                Err(e) => return Err(e.into()),
+            };
+            let is_last = i + 1 == parts.len();
+            if (is_last && !m.is_file()) || (!is_last && !m.is_dir()) {
+                return Ok(None);
+            }
+        }
+        let canon_full = match std::fs::canonicalize(&full) {
+            Ok(c) => c,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(e) => return Err(e.into()),
+        };
+        if !canon_full.starts_with(&canon_dir) {
+            return Ok(None);
         }
         let mut b = Vec::new();
         std::io::Read::read_to_end(&mut std::io::Read::take(std::fs::File::open(&full)?, xml::MAX_INPUT as u64 + 1), &mut b)?;

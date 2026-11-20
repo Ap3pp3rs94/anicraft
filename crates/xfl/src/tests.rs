@@ -909,3 +909,66 @@ fn folder_packages_refuse_backslash_paths_that_leave_the_package() {
     assert_eq!(report.skipped.get("missing library files"), Some(&1));
     std::fs::remove_dir_all(&dir).ok();
 }
+
+#[test]
+fn folder_import_enforces_full_path_boundaries() {
+    let dir = std::env::temp_dir().join(format!("anicraft-xfl-bounds-{}", std::process::id()));
+    let outside = dir.join("outside");
+    let pkg = dir.join("pkg");
+    std::fs::create_dir_all(&outside).unwrap();
+    std::fs::create_dir_all(pkg.join("LIBRARY")).unwrap();
+    std::fs::write(outside.join("Escape.xml"), BALL).unwrap();
+    std::fs::write(pkg.join("LIBRARY/Real.xml"), BALL.replace("name=\"Ball\"", "name=\"Real\"")).unwrap();
+    std::fs::write(
+        pkg.join("DOMDocument.xml"),
+        r#"<DOMDocument><symbols>
+          <Include href="../outside/Escape.xml"/>
+          <Include href="..\outside\Escape.xml"/>
+          <Include href="./Real.xml"/>
+          <Include href="C:Escape.xml"/>
+          <Include href="/Escape.xml"/>
+          <Include href="Real.xml"/>
+        </symbols></DOMDocument>"#,
+    )
+    .unwrap();
+    let (doc, report) = crate::import_path(&pkg).unwrap();
+    assert_eq!(doc.library.len(), 1, "only Real.xml inside LIBRARY is imported");
+    assert_eq!(report.skipped.get("missing library files"), Some(&5));
+
+    #[cfg(unix)]
+    {
+        let dir2 = std::env::temp_dir().join(format!("anicraft-xfl-dirsym-{}", std::process::id()));
+        let ext = dir2.join("ext");
+        let pkg2 = dir2.join("pkg");
+        std::fs::create_dir_all(&ext).unwrap();
+        std::fs::create_dir_all(&pkg2).unwrap();
+        std::fs::write(ext.join("Ball.xml"), BALL).unwrap();
+        std::os::unix::fs::symlink(&ext, pkg2.join("LIBRARY")).unwrap();
+        std::fs::write(pkg2.join("DOMDocument.xml"), r#"<DOMDocument><symbols><Include href="Ball.xml"/></symbols></DOMDocument>"#).unwrap();
+        let (doc2, report2) = crate::import_path(&pkg2).unwrap();
+        assert!(doc2.library.is_empty(), "intermediate directory symlink must not be traversed");
+        assert_eq!(report2.skipped.get("missing library files"), Some(&1));
+        std::fs::remove_dir_all(&dir2).ok();
+    }
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn bitmap_import_enforces_aggregate_pixel_budget() {
+    assert_eq!(crate::import::MAX_BITMAP_PIXELS, 256 * 1024 * 1024);
+    let doc_xml = r#"<DOMDocument><media>
+      <DOMBitmapItem name="a.png" href="a.png"/>
+      <DOMBitmapItem name="b.png" href="b.png"/>
+      <DOMBitmapItem name="c.png" href="c.png"/>
+    </media></DOMDocument>"#;
+    let files: HashMap<String, Vec<u8>> = HashMap::from([
+        ("DOMDocument.xml".to_string(), doc_xml.as_bytes().to_vec()),
+        ("LIBRARY/a.png".to_string(), png_2x1()),
+        ("LIBRARY/b.png".to_string(), png_2x1()),
+        ("LIBRARY/c.png".to_string(), png_2x1()),
+    ]);
+    let read = |p: &str| -> Result<Option<Vec<u8>>, XflError> { Ok(files.get(p).cloned()) };
+    let (doc, report) = crate::import::import_with_bitmap_budget(&read, 4).unwrap();
+    assert_eq!(doc.bitmaps.len(), 2, "two 2x1 bitmaps fit in the 4-pixel budget");
+    assert_eq!(report.skipped.get("bitmaps past the import pixel budget"), Some(&1));
+}
