@@ -3,7 +3,7 @@
 //! `file.import`, and rendered RGBA comparison.
 
 use anicraft_engine::Session;
-use anicraft_engine::doc::{Bitmap, Document, Element, ElementId, ElementKind, GradientStop, Layer, LayerId, Paint, Rgba, Shape};
+use anicraft_engine::doc::{Bitmap, Document, Element, ElementId, ElementKind, GradientStop, Layer, LayerId, Paint, Rgba, Shape, Stage};
 use anicraft_engine::geom::{Affine, Path, Vec2};
 use serde_json::json;
 use std::sync::Arc;
@@ -16,9 +16,7 @@ fn pixel_diff(a: &[u8], b: &[u8]) -> (u8, f64) {
 
 #[test]
 fn svg_export_reimport_preserves_viewbox_gradients_clips_and_links() {
-    let mut doc = Document::default();
-    doc.stage.width = 160;
-    doc.stage.height = 100;
+    let mut doc = Document { stage: Stage { width: 160, height: 100, ..Default::default() }, ..Default::default() };
     let mut src = Session::new(doc);
 
     // Linear gradient shape and radial gradient shape (with focal point) under a coverage clip.
@@ -70,8 +68,7 @@ fn svg_export_reimport_preserves_viewbox_gradients_clips_and_links() {
     assert!(svg.contains("<clipPath"), "coverage clip preserved: {svg}");
 
     // Reimport through `file.import` into an empty document of the same stage size and compare pixels.
-    let mut dst_doc = Document::default();
-    dst_doc.stage = src.doc.stage;
+    let dst_doc = Document { stage: src.doc.stage, ..Default::default() };
     let mut dst = Session::new(dst_doc);
     dst.execute("file.import", &json!({"path": svg_path.display().to_string(), "x": 0, "y": 0})).unwrap();
 
@@ -87,8 +84,7 @@ fn svg_export_reimport_preserves_viewbox_gradients_clips_and_links() {
     assert!(linked_svg.contains("<a href=\"https://example.org/?a=1&amp;b=&quot;ok&quot;\">"), "{linked_svg}");
     let linked_path = dir.join("linked.svg");
     std::fs::write(&linked_path, linked_svg.as_bytes()).unwrap();
-    let mut linked_doc = Document::default();
-    linked_doc.stage = src.doc.stage;
+    let linked_doc = Document { stage: src.doc.stage, ..Default::default() };
     let mut linked = Session::new(linked_doc);
     linked.execute("file.import", &json!({"path": linked_path.display().to_string(), "x": 0, "y": 0})).unwrap();
     let got_linked = anicraft_engine::render::render_frame(&linked.doc, 0, 1.0).unwrap().to_rgba8();
@@ -100,9 +96,7 @@ fn svg_export_reimport_preserves_viewbox_gradients_clips_and_links() {
 
 #[test]
 fn svg_bitmap_fill_exports_embedded_image_and_import_reports_unsupported_pattern() {
-    let mut doc = Document::default();
-    doc.stage.width = 40;
-    doc.stage.height = 40;
+    let mut doc = Document { stage: Stage { width: 40, height: 40, ..Default::default() }, ..Default::default() };
     let bid = anicraft_engine::doc::BitmapId(1);
     let bmp = Bitmap::from_rgba(bid, "px", 2, 2, vec![255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 0, 255]).unwrap();
     doc.bitmaps.push(Arc::new(bmp));
@@ -133,8 +127,7 @@ fn svg_bitmap_fill_exports_embedded_image_and_import_reports_unsupported_pattern
     assert!(svg.contains("<pattern ") && svg.contains("fill=\"url(#p"), "bitmap fill references pattern: {svg}");
 
     // Retained format caveat: SVG import does not represent `<pattern>`/`<image>` yet and reports it cleanly.
-    let mut dst_doc = Document::default();
-    dst_doc.stage = src.doc.stage;
+    let dst_doc = Document { stage: src.doc.stage, ..Default::default() };
     let mut dst = Session::new(dst_doc);
     let imported = dst.execute("file.import", &json!({"path": svg_path.display().to_string(), "x": 0, "y": 0})).unwrap();
     let report = imported["report"].as_str().unwrap_or("");

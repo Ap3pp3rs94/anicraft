@@ -81,13 +81,11 @@ fn plugins_run_in_the_browser_too() {
 
 #[wasm_bindgen_test]
 fn exports_and_reimports_svg_and_lottie_in_memory() {
-    use anicraft_engine::doc::{Document, Element, ElementId, ElementKind, GradientStop, Paint, Rgba, Shape};
+    use anicraft_engine::doc::{Document, Element, ElementId, ElementKind, GradientStop, Paint, Rgba, Shape, Stage};
     use anicraft_engine::geom::{Affine, Path as GeomPath, Vec2};
     use std::sync::Arc;
 
-    let mut doc = Document::default();
-    doc.stage.width = 120;
-    doc.stage.height = 80;
+    let mut doc = Document { stage: Stage { width: 120, height: 80, ..Default::default() }, ..Default::default() };
     let linear = Paint::linear(
         Vec2::new(10.0, 10.0),
         Vec2::new(110.0, 10.0),
