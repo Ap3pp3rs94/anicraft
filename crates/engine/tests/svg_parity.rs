@@ -80,8 +80,11 @@ fn svg_export_reimport_preserves_viewbox_gradients_clips_and_links() {
     let (worst, mean) = pixel_diff(&want, &got);
     assert!(mean < 0.05 && worst <= 2, "gradients+clip+viewBox round-trip: mean {mean:.4}, worst {worst}");
 
-    // Representative link behavior: an `<a href="...">` wrapping a shape imports and renders identically.
-    let linked_svg = svg.replacen("<path ", "<a href=\"https://example.org/?a=1&amp;b=&quot;ok&quot;\"><path ", 1).replacen("/>", "/></a>", 1);
+    // Representative link behavior: an `<a href="...">` emitted by `to_svg` imports and renders identically.
+    let mut dl = anicraft_engine::doc::evaluate(&src.doc, 0);
+    dl.links = vec![(0, "https://example.org/?a=1&b=\"ok\"".into())];
+    let linked_svg = anicraft_engine::render::svg::to_svg(&dl, &src.doc.stage);
+    assert!(linked_svg.contains("<a href=\"https://example.org/?a=1&amp;b=&quot;ok&quot;\">"), "{linked_svg}");
     let linked_path = dir.join("linked.svg");
     std::fs::write(&linked_path, linked_svg.as_bytes()).unwrap();
     let mut linked_doc = Document::default();
