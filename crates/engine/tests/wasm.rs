@@ -82,7 +82,7 @@ fn plugins_run_in_the_browser_too() {
 #[wasm_bindgen_test]
 fn exports_and_reimports_svg_and_lottie_in_memory() {
     use anicraft_engine::doc::{Document, Element, ElementId, ElementKind, GradientStop, Paint, Rgba, Shape};
-    use anicraft_engine::geom::{Affine, Path, Vec2};
+    use anicraft_engine::geom::{Affine, Path as GeomPath, Vec2};
     use std::sync::Arc;
 
     let mut doc = Document::default();
@@ -102,7 +102,7 @@ fn exports_and_reimports_svg_and_lottie_in_memory() {
             name: "grad".into(),
             transform: Affine::IDENTITY,
             color: Default::default(),
-            kind: ElementKind::Shape(Shape::filled(Path::rect(10.0, 10.0, 100.0, 60.0), linear)),
+            kind: ElementKind::Shape(Shape::filled(GeomPath::rect(10.0, 10.0, 100.0, 60.0), linear)),
         }));
     }
     let mut s = Session::new(doc);

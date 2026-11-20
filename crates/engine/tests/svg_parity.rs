@@ -3,7 +3,7 @@
 //! `file.import`, and rendered RGBA comparison.
 
 use anicraft_engine::Session;
-use anicraft_engine::doc::{Bitmap, Document, Element, ElementId, ElementKind, GradientStop, Layer, LayerId, Paint, Pixels, Rgba, Shape};
+use anicraft_engine::doc::{Bitmap, Document, Element, ElementId, ElementKind, GradientStop, Layer, LayerId, Paint, Rgba, Shape};
 use anicraft_engine::geom::{Affine, Path, Vec2};
 use serde_json::json;
 use std::sync::Arc;
@@ -101,11 +101,8 @@ fn svg_bitmap_fill_exports_embedded_image_and_import_reports_unsupported_pattern
     doc.stage.width = 40;
     doc.stage.height = 40;
     let bid = anicraft_engine::doc::BitmapId(1);
-    doc.bitmaps.push(Bitmap {
-        id: bid,
-        name: "px".into(),
-        pixels: Arc::new(Pixels { width: 2, height: 2, rgba: vec![255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 0, 255] }),
-    });
+    let bmp = Bitmap::from_rgba(bid, "px", 2, 2, vec![255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 0, 255]).unwrap();
+    doc.bitmaps.push(Arc::new(bmp));
     {
         let tl = doc.timeline_mut(0);
         let layer = Layer::new(LayerId(9), "Bitmap");
