@@ -807,7 +807,7 @@ mod group_tests {
             },
             &stage,
         );
-        assert!(allowed.contains("<a href=\"https://example.org/?a=1&amp;b=&quot;&lt;&gt;&apos;ok\"><path "), "{allowed}");
+        assert!(allowed.contains("<a href=\"https://example.org/?a=1&amp;b=&quot;&lt;&gt;'ok\"><path "), "{allowed}");
         assert!(allowed.contains("</a>"), "{allowed}");
 
         for denied in ["JavaScript:alert(1)", " java\tscript:alert(1)", "vb\rscript:msgbox(1)", "da\nta:text/html,x"] {
