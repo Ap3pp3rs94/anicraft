@@ -972,3 +972,27 @@ fn bitmap_import_enforces_aggregate_pixel_budget() {
     assert_eq!(doc.bitmaps.len(), 2, "two 2x1 bitmaps fit in the 4-pixel budget");
     assert_eq!(report.skipped.get("bitmaps past the import pixel budget"), Some(&1));
 }
+
+#[test]
+fn valid_long_bitmap_sequence_imports_under_budget() {
+    let count = 200usize;
+    let mut media = String::new();
+    let mut frames = String::new();
+    let mut files: HashMap<String, Vec<u8>> = HashMap::new();
+    let img = png_2x1();
+    for i in 0..count {
+        let name = format!("seq/frame_{i:04}.png");
+        media.push_str(&format!(r#"<DOMBitmapItem name="{name}" href="{name}"/>"#));
+        frames.push_str(&format!(r#"<DOMFrame index="{i}"><elements><DOMBitmapInstance libraryItemName="{name}"/></elements></DOMFrame>"#));
+        files.insert(format!("LIBRARY/{name}"), img.clone());
+    }
+    let doc_xml = format!(
+        r#"<DOMDocument><media>{media}</media><timelines><DOMTimeline name="Scene 1"><layers><DOMLayer name="Seq"><frames>{frames}</frames></DOMLayer></layers></DOMTimeline></timelines></DOMDocument>"#
+    );
+    files.insert("DOMDocument.xml".to_string(), doc_xml.into_bytes());
+    let read = |p: &str| -> Result<Option<Vec<u8>>, XflError> { Ok(files.get(p).cloned()) };
+    let (doc, report) = import_with(&read).unwrap();
+    assert_eq!(doc.bitmaps.len(), count, "all {count} sequence bitmaps fit within the 256 MP budget");
+    assert_eq!(doc.timeline(0).layers[0].keyframes.len(), count);
+    assert!(!report.skipped.contains_key("bitmaps past the import pixel budget"));
+}
