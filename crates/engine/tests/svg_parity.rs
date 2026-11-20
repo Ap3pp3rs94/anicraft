@@ -16,7 +16,7 @@ fn pixel_diff(a: &[u8], b: &[u8]) -> (u8, f64) {
 
 #[test]
 fn svg_export_reimport_preserves_viewbox_gradients_clips_and_links() {
-    let mut doc = Document { stage: Stage { width: 160, height: 100, ..Default::default() }, ..Default::default() };
+    let doc = Document { stage: Stage { width: 160, height: 100, ..Default::default() }, ..Default::default() };
     let mut src = Session::new(doc);
 
     // Linear gradient shape and radial gradient shape (with focal point) under a coverage clip.
