@@ -209,13 +209,14 @@ fn the_xfl_corpus_plays_as_evaluated() {
 }
 
 #[test]
-fn scalar_and_array_tangents_with_rounded_times_match_prior_consumer_output() {
+fn scalar_and_array_tangents_match_prior_consumer_output() {
+    // Fractional timestamp rounding parity is covered by #499 (`shared_keys_keep_legacy_fractional_times_and_playback`).
     let doc = tweens_movie();
     let last = doc.frame_count().saturating_sub(1);
     let eased = to_lottie_keyed(&doc, "tangents", 0, last, true, LottieKeys::Eased);
     let current: Value = serde_json::from_str(&eased.json).unwrap();
 
-    // Verify current export writes array tangents (o.x / i.x) and rounded keyframe times.
+    // Verify current export writes array tangents (o.x / i.x) while matching prior scalar-tangent playback.
     let mut saw_array_tangent = false;
     fn to_scalar_tangents(v: &mut Value, saw_array: &mut bool) {
         match v {
