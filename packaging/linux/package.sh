@@ -52,12 +52,16 @@ case "$ARCH" in
 esac
 export ANICRAFT_MAINTAINER="${ANICRAFT_MAINTAINER:-AniCraft maintainers <anicraft@storyteller.ai>}"
 IS_NIGHTLY=0
+BASENAME_VERSION="$VERSION"
 if [[ "${ANICRAFT_BUILD_CHANNEL:-}" == nightly-v1 || "$VERSION" == *-nightly* ]]; then
   IS_NIGHTLY=1
   export ANICRAFT_BUILD_CHANNEL=nightly-v1
   export ANICRAFT_OVERRIDE_VERSION="$VERSION"
+  if [[ "$BASENAME_VERSION" != *-nightly* ]]; then
+    BASENAME_VERSION="$VERSION-nightly"
+  fi
 fi
-BASENAME="anicraft-$VERSION-linux-$ARCH"
+BASENAME="anicraft-$BASENAME_VERSION-linux-$ARCH"
 
 if [[ -n "$ARCH_TAR_DIR" && "$IS_NIGHTLY" != 1 ]]; then
   echo "error: --arch-tar-dir is only for Nightly builds" >&2
@@ -157,7 +161,19 @@ exec /usr/lib/anicraft-nightly/anicraft "$@"
 WRAPPER
     chmod 755 "$NFPM_STAGE/usr/bin/$NFPM_BIN"
     rm -f "$NFPM_STAGE/usr/bin/anicraft"
-    mv "$NFPM_STAGE/usr/bin/anicraft-cli" "$NFPM_STAGE/usr/bin/$NFPM_CLI"
+    install -Dm755 "$NFPM_STAGE/usr/bin/anicraft-cli" "$NFPM_STAGE/usr/lib/anicraft-nightly/anicraft-cli"
+    cat >"$NFPM_STAGE/usr/bin/$NFPM_CLI" <<'CLI_WRAPPER'
+#!/bin/sh
+set -eu
+if [ "${1:-}" = "--version" ] || [ "${1:-}" = "-V" ]; then
+  exec /usr/lib/anicraft-nightly/anicraft-cli "$@"
+fi
+profile_base="${XDG_DATA_HOME:-${HOME:?HOME is required}/.local/share}"
+export XDG_CONFIG_HOME="$profile_base/anicraft-nightly"
+exec /usr/lib/anicraft-nightly/anicraft-cli "$@"
+CLI_WRAPPER
+    chmod 755 "$NFPM_STAGE/usr/bin/$NFPM_CLI"
+    rm -f "$NFPM_STAGE/usr/bin/anicraft-cli"
     mv "$NFPM_STAGE/usr/share/doc/anicraft" "$NFPM_STAGE/usr/share/doc/$NFPM_NAME"
     sed -e "s|^Exec=anicraft\([[:space:]]\|$\)|Exec=$NFPM_BIN\1|" \
         -e "s|^TryExec=anicraft$|TryExec=$NFPM_BIN|" \
