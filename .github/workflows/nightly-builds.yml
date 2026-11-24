@@ -39,16 +39,19 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: The archive, plist and Apple-tool stand-in suites
+      - name: The synthetic suites (archive, launcher, release contract, plist, Apple stand-ins)
         run: python3 packaging/nightly-tests.py
       - name: Shell syntax of every Nightly script
         run: |
           set -euo pipefail
           for script in packaging/nightly-common.sh packaging/linux/nightly.sh \
+            packaging/linux/nightly-launch.sh packaging/linux/nightly-arch-tar.sh \
             packaging/macos/nightly-lib.sh packaging/macos/nightly.sh \
             packaging/macos/nightly-sign.sh packaging/macos/nightly-verify.sh; do
             bash -n "$script"
           done
+      - name: The Arch handoff, staged and started as the packager ships it
+        run: bash packaging/linux/nightly-arch-tar-test.sh
 
   windows:
     name: Nightly GUI (x86_64, unsigned)
@@ -120,7 +123,7 @@ jobs:
           } finally { $archive.Dispose() }
           $stage = Join-Path $env:RUNNER_TEMP 'nightly-targets\windows-package\nightly-v1-x86_64\anicraft.exe'
           $plain = (& $stage --version | Out-String).Trim()
-          if ($plain -cne "AniCraft $env:ANICRAFT_VERSION (nightly-v1)") { throw "the version query reports '$plain'" }
+          if ($plain -cne "AniCraft Nightly $env:ANICRAFT_VERSION (nightly-v1)") { throw "the version query reports '$plain'" }
           $launcher = (& $stage --launch-profile nightly-v1 --profile-root (Join-Path $env:RUNNER_TEMP 'profile') --version | Out-String).Trim()
           if ($launcher -cne $plain) { throw "the Launcher's query reports '$launcher', not '$plain'" }
       - name: Keep the unsigned ZIP
@@ -186,11 +189,17 @@ jobs:
           mkdir -p "$out"
           tar -xzf "$tar" -C "$out"
           test -x "$out/anicraft"
+          test -x "$out/anicraft-nightly"
           test -f "$out/anicraft-nightly.png"
           for notice in README.md LICENSE-MIT LICENSE-APACHE NOTICE ATTRIBUTION.md; do test -f "$out/$notice"; done
-          test "$(ls "$out" | wc -l)" -le 10
+          test "$(ls "$out" | wc -l)" -le 12
+          expected="AniCraft Nightly $ANICRAFT_VERSION (nightly-v1)"
           plain="$("$out/anicraft" --version)"
-          test "$plain" = "AniCraft $ANICRAFT_VERSION (nightly-v1)"
+          test "$plain" = "$expected"
+          # The unpacked launcher starts that binary in its own profile, as every format does.
+          launched="$("$out/anicraft-nightly" --version)"
+          test "$launched" = "$expected"
+          grep -q -- '--launch-profile nightly-v1 --profile-root' "$out/anicraft-nightly"
           echo "tar: $plain"
       - name: Keep the unsigned tar
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

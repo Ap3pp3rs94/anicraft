@@ -149,17 +149,10 @@ if has deb || has rpm; then
     rm -rf "$NFPM_STAGE"
     cp -R "$STAGE" "$NFPM_STAGE"
     install -Dm755 "$NFPM_STAGE/usr/bin/anicraft" "$NFPM_STAGE/usr/lib/anicraft-nightly/anicraft"
-    cat >"$NFPM_STAGE/usr/bin/$NFPM_BIN" <<'WRAPPER'
-#!/bin/sh
-set -eu
-if [ "${1:-}" = "--version" ] || [ "${1:-}" = "-V" ]; then
-  exec /usr/lib/anicraft-nightly/anicraft "$@"
-fi
-profile_base="${XDG_DATA_HOME:-${HOME:?HOME is required}/.local/share}"
-export XDG_CONFIG_HOME="$profile_base/anicraft-nightly"
-exec /usr/lib/anicraft-nightly/anicraft "$@"
-WRAPPER
-    chmod 755 "$NFPM_STAGE/usr/bin/$NFPM_BIN"
+    # The shared nightly launcher (packaging/linux/nightly-launch.sh): the real program in
+    # usr/lib/anicraft-nightly, started with --launch-profile nightly-v1 --profile-root <its own
+    # profile> -- <arguments>, so no format can start it without a private profile.
+    install -Dm755 "$HERE/nightly-launch.sh" "$NFPM_STAGE/usr/bin/$NFPM_BIN"
     rm -f "$NFPM_STAGE/usr/bin/anicraft"
     install -Dm755 "$NFPM_STAGE/usr/bin/anicraft-cli" "$NFPM_STAGE/usr/lib/anicraft-nightly/anicraft-cli"
     cat >"$NFPM_STAGE/usr/bin/$NFPM_CLI" <<'CLI_WRAPPER'
@@ -188,6 +181,7 @@ CLI_WRAPPER
         -e "s|<icon type=\"stock\">$APP_ID</icon>|<icon type=\"stock\">$NIGHTLY_DESK_ID</icon>|g" \
         -e "s|<binary>anicraft</binary>|<binary>$NFPM_BIN</binary>|g" \
         -e "s|<binary>anicraft-cli</binary>|<binary>$NFPM_CLI</binary>|g" \
+        -e '/<mediatype>/d' \
         "$NFPM_STAGE/usr/share/metainfo/$APP_ID.metainfo.xml" >"$NFPM_STAGE/usr/share/metainfo/$NIGHTLY_DESK_ID.metainfo.xml"
     rm -f "$NFPM_STAGE/usr/share/metainfo/$APP_ID.metainfo.xml"
     rm -rf "$NFPM_STAGE/usr/share/mime"
@@ -216,18 +210,9 @@ if has appimage; then
   cp -R "$STAGE" "$APPDIR"
   if [[ "$IS_NIGHTLY" = 1 ]]; then
     APPIMAGE_ID="$APP_ID.nightly-v1"
-    cat >"$APPDIR/AppRun" <<'APPRUN'
-#!/bin/sh
-set -eu
-APPDIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
-if [ "${1:-}" = "--version" ] || [ "${1:-}" = "-V" ]; then
-  exec "$APPDIR/usr/bin/anicraft" "$@"
-fi
-profile_base="${XDG_DATA_HOME:-${HOME:?HOME is required}/.local/share}"
-export XDG_CONFIG_HOME="$profile_base/anicraft-nightly"
-exec "$APPDIR/usr/bin/anicraft" "$@"
-APPRUN
-    chmod 755 "$APPDIR/AppRun"
+    # AppRun is the shared launcher (not a symlink): from $APPDIR it finds usr/bin/anicraft and
+    # starts it with the flavor's protocol and a profile of its own.
+    install -Dm755 "$HERE/nightly-launch.sh" "$APPDIR/AppRun"
     sed -e "s|^Icon=$APP_ID$|Icon=$APPIMAGE_ID|" \
         -e "s|^Name=AniCraft$|Name=AniCraft Nightly|" \
         -e '/^MimeType=/d' \

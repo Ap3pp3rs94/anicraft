@@ -165,7 +165,7 @@ class Fixture:
         (app / "Contents/MacOS").mkdir(parents=True)
         (app / "Contents/Resources").mkdir()
         exe = app / "Contents/MacOS/AniCraft"
-        exe.write_text(gui or f"#!/bin/sh\ntouch {self.ran}\necho 'AniCraft {version} (nightly-v1)'\n")
+        exe.write_text(gui or f"#!/bin/sh\ntouch {self.ran}\necho 'AniCraft Nightly {version} (nightly-v1)'\n")
         exe.chmod(0o755)
         (app / "Contents/Resources/anicraft-nightly.icns").write_bytes(b"generated icon")
         rendered = PLIST.render((HERE / "Info.plist.in").read_bytes(), version, COMMIT)
@@ -362,14 +362,14 @@ class Verify(unittest.TestCase):
         return self.f.run("nightly-verify.sh", "--input", self.f.input, *args, **{name: None for name in SECRETS}, **env)
 
     def test_asks_the_gui_its_version_with_an_empty_environment(self):
-        self.f.bundle(gui=f"#!/bin/sh\n[ -z \"$INHERITED\" ] || exit 9\necho 'AniCraft {VERSION} (nightly-v1)'\n")
+        self.f.bundle(gui=f"#!/bin/sh\n[ -z \"$INHERITED\" ] || exit 9\necho 'AniCraft Nightly {VERSION} (nightly-v1)'\n")
         result = self.verify("--expect", "unsigned", INHERITED="generated")
         self.assertEqual(result.returncode, 0, result.stdout)
         self.f.bundle(gui="#!/bin/sh\necho 'AniCraft 0.23.1 (stable)'\n")
         self.assertNotEqual(self.verify("--expect", "unsigned").returncode, 0)
 
     def test_the_launcher_profile_form_must_answer_promptly_and_cleanly(self):
-        answer = f"echo 'AniCraft {VERSION} (nightly-v1)'"
+        answer = f"echo 'AniCraft Nightly {VERSION} (nightly-v1)'"
         # The shared producer smoke's exact form, with a fresh profile directory.
         exact = ('#!/bin/sh\nif [ "$1" = --launch-profile ]; then\n'
                  '  [ "$#" = 5 ] && [ "$2" = nightly-v1 ] && [ "$3" = --profile-root ] && [ -d "$4" ] && [ "$5" = --version ] || exit 7\n'

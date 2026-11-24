@@ -236,12 +236,20 @@ fn validate_for(
             return Err(tr!("nightly-v1 cannot be combined with {name}", name = key).into());
         }
     }
-    if platform != Platform::Windows && env("FLATPAK_ID").is_some_and(|v| !v.is_empty()) {
-        // These rows are native tar/app-bundle launches, not a Flatpak package. Inheriting its
-        // runtime namespace could point another profile at the stable app's socket or data.
-        return Err(tr!("nightly-v1 native packages cannot inherit a Flatpak instance; launch through the native Launcher").into());
-    }
     let chosen = canonical_future(root)?;
+    // These rows are native tar/package launches, not a Flatpak package, and inheriting another
+    // app's runtime namespace could point this profile at its socket or data. The Nightly Flatpak
+    // is the one instance a Nightly build may run in, and there the profile stays in the app's own
+    // private home (`packaging/linux/flatpak-bundle.sh`).
+    if platform != Platform::Windows && let Some(id) = env("FLATPAK_ID").filter(|v| !v.is_empty()) {
+        if id != crate::platform::APP_ID_NIGHTLY_PACKAGE {
+            return Err(tr!("nightly-v1 native packages cannot inherit a Flatpak instance; launch through the native Launcher").into());
+        }
+        let home = canonical_future(&required_base(&env, "HOME")?)?;
+        if !chosen.starts_with(&home) {
+            return Err(tr!("the Nightly Flatpak's profile must stay in its own home").into());
+        }
+    }
     if is_portable_layout(root, platform) || is_portable_layout(&chosen, platform) {
         return Err(tr!("the nightly root must not use a portable AniCraft installation or its data folder").into());
     }
@@ -585,6 +593,19 @@ mod tests {
         }
         fixture.env.insert("FLATPAK_ID".into(), "ai.storyteller.anicraft".into());
         assert!(fixture.check(Platform::Linux, &candidate).unwrap_err().contains("Flatpak"));
+        // The Nightly Flatpak itself is a supported format, as long as its profile stays in the
+        // sandbox's own home; anything else keeps the inheritance refusal.
+        fixture.env.insert("FLATPAK_ID".into(), crate::platform::APP_ID_NIGHTLY_PACKAGE.into());
+        let in_sandbox = fixture.home().join("sandbox-home/anicraft-nightly/profile");
+        assert_eq!(fixture.check(Platform::Linux, &in_sandbox).unwrap(), std::fs::canonicalize(&in_sandbox).unwrap());
+        let outside = fixture.root.join("outside-the-sandbox").join("anicraft-nightly");
+        let probed = std::cell::Cell::new(false);
+        let result = validate_for(Platform::Linux, &outside, |key| fixture.get(key), Some(&fixture.exe), |_| {
+            probed.set(true);
+            Ok(())
+        });
+        assert!(result.unwrap_err().contains("own home"));
+        assert!(!probed.get() && !outside.exists());
         fixture.env.remove("FLATPAK_ID");
         fixture.env.remove("HOME");
         assert!(fixture.check(Platform::Linux, &candidate).unwrap_err().contains("HOME"));

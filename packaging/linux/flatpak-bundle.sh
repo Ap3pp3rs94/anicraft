@@ -59,7 +59,9 @@ mkdir -p "$WORK/stage"
 tar -xzf "$TARBALL" -C "$WORK/stage" --strip-components=1
 [[ -x "$WORK/stage/bin/anicraft" ]] || { echo "error: $TARBALL has no bin/anicraft" >&2; exit 1; }
 if [[ "$FLATPAK_ID" != "$APP_ID" ]]; then
-  sed -e "s|^Icon=$APP_ID$|Icon=$FLATPAK_ID|" \
+  sed -e "s#^Exec=anicraft\([[:space:]]\|$\)#Exec=anicraft-nightly\1#" \
+      -e "s|^TryExec=anicraft$|TryExec=anicraft-nightly|" \
+      -e "s|^Icon=$APP_ID$|Icon=$FLATPAK_ID|" \
       -e "s|^Name=AniCraft$|Name=AniCraft Nightly|" \
       -e 's|^StartupWMClass=.*|StartupWMClass=ai.storyteller.anicraft.nightly-v1|' \
       -e '/^MimeType=/d' \
@@ -69,9 +71,11 @@ if [[ "$FLATPAK_ID" != "$APP_ID" ]]; then
       -e "s|<name>AniCraft</name>|<name>AniCraft Nightly</name>|g" \
       -e "s|<launchable type=\"desktop-id\">$APP_ID.desktop</launchable>|<launchable type=\"desktop-id\">$FLATPAK_ID.desktop</launchable>|g" \
       -e "s|<icon type=\"stock\">$APP_ID</icon>|<icon type=\"stock\">$FLATPAK_ID</icon>|g" \
+      -e '/<mediatype>/d' \
       "$WORK/stage/share/metainfo/$APP_ID.metainfo.xml" >"$WORK/stage/share/metainfo/$FLATPAK_ID.metainfo.xml"
   rm -f "$WORK/stage/share/metainfo/$APP_ID.metainfo.xml"
-  mv "$WORK/stage/share/mime/packages/$APP_ID.xml" "$WORK/stage/share/mime/packages/$FLATPAK_ID.xml"
+  # Nightly registers no file associations (its desktop entry drops MimeType= too).
+  rm -rf "$WORK/stage/share/mime"
   NIGHTLY_ICON="$ROOT/assets/app-icon/anicraft-nightly.png"
   if [[ ! -f "$NIGHTLY_ICON" ]]; then
     NIGHTLY_ICON="$ROOT/assets/app-icon/hicolor/256x256/apps/$APP_ID.png"
@@ -79,7 +83,13 @@ if [[ "$FLATPAK_ID" != "$APP_ID" ]]; then
   rm -rf "$WORK/stage/share/icons/hicolor"
   install -Dm644 "$NIGHTLY_ICON" \
     "$WORK/stage/share/icons/hicolor/256x256/apps/$FLATPAK_ID.png"
+  # The sandbox keeps its own home, but the program still needs the flavor's profile protocol: the
+  # bundle runs the same launcher every other format installs (packaging/linux/nightly-launch.sh).
+  install -Dm755 "$HERE/nightly-launch.sh" "$WORK/stage/bin/anicraft-nightly"
   sed -e "s|ai\.storyteller\.anicraft|$FLATPAK_ID|g" \
+      -e "s|^command: anicraft$|command: anicraft-nightly|" \
+      -e "s|^      - install -Dm755 bin/anicraft /app/bin/anicraft$|      - install -Dm755 bin/anicraft /app/bin/anicraft\\n      - install -Dm755 bin/anicraft-nightly /app/bin/anicraft-nightly|" \
+      -e '/install -Dm644 share\/mime\/packages\//d' \
       "$HERE/flatpak/$APP_ID.bundle.yml" >"$WORK/$FLATPAK_ID.yml"
 else
   cp "$HERE/flatpak/$APP_ID.bundle.yml" "$WORK/$FLATPAK_ID.yml"

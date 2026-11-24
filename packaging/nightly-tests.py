@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Run the synthetic nightly packaging suites together; no app build or signing.
 
-`nightly-release-tests.py` (the dormant callers' and policy's contract tests) is not part of this
-list: it arrives with the caller PR, which carries `nightly.yml`, `nightly-sign.yml` and
-`nightly-signing-policy.json` (see docs/nightly-builds.md › Callers and policy).
+`nightly-release-tests.py` is dylanmtaylor's contract suite for the enabled callers and the
+installed policy (`nightly.yml`, `nightly-sign.yml`, `.github/nightly-signing-policy.json`); it
+runs here too, so one command covers everything the PR adds.
 """
 import importlib.util
 from pathlib import Path
@@ -15,6 +15,8 @@ def main() -> int:
     suite = unittest.TestSuite()
     for name, relative in (
         ("anicraft_archive_suite", "nightly-archive-tests.py"),
+        ("anicraft_launch_suite", "nightly-launch-tests.py"),
+        ("anicraft_release_suite", "nightly-release-tests.py"),
         ("anicraft_plist_suite", "macos/nightly_plist_tests.py"),
         ("anicraft_mac_sign_suite", "macos/nightly_sign_tests.py"),
     ):

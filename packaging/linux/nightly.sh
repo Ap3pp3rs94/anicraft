@@ -25,10 +25,17 @@ nightly_refuse_signing_env
 nightly_build_gui
 STAGE="$NIGHTLY_WORK/stage"
 mkdir -p "$STAGE"
-cp "$NIGHTLY_GUI" "$STAGE/anicraft"
-chmod 755 "$STAGE/anicraft"
+install -m755 "$NIGHTLY_GUI" "$STAGE/anicraft"
+"${CROSS_COMPILE:-}strip" "$STAGE/anicraft" 2>/dev/null || true
+# The same launcher the deb/rpm, AppImage, Arch and Flatpak nightly formats install: an extracted
+# tar starts through it, so its settings stay in its own profile instead of stable's folder.
+install -m755 "$ROOT/packaging/linux/nightly-launch.sh" "$STAGE/anicraft-nightly"
 cp "$ROOT/assets/app-icon/anicraft-nightly.png" "$STAGE/anicraft-nightly.png"
 nightly_copy_notices "$STAGE"
+# The staged launcher answers the Launcher's version query from the staged binary, exactly as an
+# extracted copy does (no profile is created by a query).
+[[ "$("$STAGE/anicraft-nightly" --version)" == "AniCraft Nightly $VERSION (nightly-v1)" ]] ||
+  nightly_die 'the archive launcher does not answer the prepared nightly version'
 # The private mktemp cwd is the helper authority root, not a CLI path parent.
 (cd "$NIGHTLY_WORK" && python3 "$ROOT/packaging/nightly-archive.py" linux stage archive.tar.gz)
 nightly_publish_archive "$NIGHTLY_WORK/archive.tar.gz" "$OUTPUT"

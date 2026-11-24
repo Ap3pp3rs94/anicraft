@@ -23,9 +23,12 @@ nightly_init() {
   if [[ -n "${CRAFT_FONTS_DIR:-}" && ! -d "$CRAFT_FONTS_DIR/fonts" ]]; then
     nightly_die 'declared CRAFT_FONTS_DIR has no fonts directory'
   fi
-  # env.sh keeps the established notice copier and the ANICRAFT_ prefix. Required values above
-  # prohibit its stable fallbacks.
-  export ANICRAFT_VERSION
+  # env.sh keeps the established notice copier and reads ANICRAFT_VERSION into VERSION; the values
+  # required above prohibit its stable fallbacks. build.rs (src/build_channel.rs) compiles the
+  # channel and the prepared feed identity in, so the binary prints that exact version and never
+  # Cargo's 0.3.0.
+  export ANICRAFT_BUILD_CHANNEL ANICRAFT_VERSION ANICRAFT_BUILD_SHA ANICRAFT_BUILD_DATE
+  # shellcheck source=env.sh
   . "$ROOT/packaging/env.sh"
   [[ "$VERSION" == "$ANICRAFT_VERSION" ]] || nightly_die 'the prepared version and env.sh disagree'
   export CARGO_TARGET_DIR="$CARGO_TARGET_DIR/nightly-v1/$os-$arch"
@@ -49,7 +52,9 @@ nightly_build_gui() {
   nightly_compile_gui
   local actual
   actual="$("$NIGHTLY_GUI" --version)" || nightly_die 'side-effect-free nightly version verification failed'
-  [[ "$actual" == "AniCraft $VERSION (nightly-v1)" ]] || nightly_die 'the built version/flavor is not the prepared identity'
+  # The line the flavor prints: `platform::name_for(NightlyV1)`, the build channel and the
+  # prepared version (`src/main.rs`, `src/build_flavor.rs`). The Launcher parses this same line.
+  [[ "$actual" == "AniCraft Nightly $VERSION (nightly-v1)" ]] || nightly_die 'the built version/flavor is not the prepared identity'
   [[ "$(git -C "$ROOT" rev-parse HEAD)" == "$ANICRAFT_BUILD_SHA" && -z "$(git -C "$ROOT" status --porcelain)" ]] || nightly_die 'source changed during the version query'
 }
 

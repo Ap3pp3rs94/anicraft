@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Validate the staged Arch launcher without building or opening AniCraft.
+# Validate the staged Arch handoff without building or opening AniCraft.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -8,34 +8,59 @@ trap 'rm -rf "$work"' EXIT
 stage="$work/source"
 dst="$work/dist"
 base=anicraft-0.0.1-nightly.1-linux-x86_64
-mkdir -p "$stage/bin" "$dst" "$work/extract"
+mkdir -p "$stage/bin" "$dst" "$work/extract" "$stage/share/applications" "$stage/share/metainfo"
 
-# A local env+argv recorder stands in for the compiled binaries. It never opens a UI.
+# A local argv recorder stands in for the compiled binaries. It never opens a UI.
 cat >"$stage/bin/anicraft" <<'RECORDER'
 #!/bin/sh
-printf 'XDG_CONFIG_HOME=<%s>\n' "${XDG_CONFIG_HOME:-}"
 for arg in "$@"; do
   printf '<%s>\n' "$arg"
 done
 RECORDER
 chmod 755 "$stage/bin/anicraft"
 cp "$stage/bin/anicraft" "$stage/bin/anicraft-cli"
+# The stage package.sh builds, as far as the handoff reads it.
+cp "$HERE/ai.storyteller.anicraft.desktop" "$stage/share/applications/ai.storyteller.anicraft.desktop"
+sed -e 's/@VERSION@/0.0.1/' -e 's/@DATE@/2026-11-24/' \
+  "$HERE/ai.storyteller.anicraft.metainfo.xml.in" >"$stage/share/metainfo/ai.storyteller.anicraft.metainfo.xml"
+mkdir -p "$stage/share/mime/packages"
+cp "$HERE/ai.storyteller.anicraft.mime.xml" "$stage/share/mime/packages/ai.storyteller.anicraft.xml"
 
 bash "$HERE/nightly-arch-tar.sh" "$stage" "$work/stage" "$dst" "$base"
 tar -xzf "$dst/$base.tar.gz" -C "$work/extract"
-bin="$work/extract/$base/bin"
+pack="$work/extract/$base"
+# The launcher is the shared one, byte for byte, and the real program hides beside it.
+cmp "$HERE/nightly-launch.sh" "$pack/bin/anicraft"
+bash -n "$pack/bin/anicraft"
 # Simulate the existing Arch bin-tree copy and public launcher rename.
 mkdir -p "$work/installed"
-cp -R "$bin" "$work/installed/bin"
+cp -R "$pack/bin" "$work/installed/bin"
 bin="$work/installed/bin"
 mv "$bin/anicraft" "$bin/anicraft-nightly"
 mv "$bin/anicraft-cli" "$bin/anicraft-nightly-cli"
-
-[[ ! -e "$stage/bin/.anicraft-nightly" ]]
 cmp "$stage/bin/anicraft" "$bin/.anicraft-nightly/anicraft"
 cmp "$stage/bin/anicraft-cli" "$bin/anicraft-nightly-cli"
+
+# No stable desktop entry, AppStream id, icon or MIME package can reach an Arch Nightly install.
+apps="$pack/share/applications"
+nightly_id=ai.storyteller.anicraft.nightly-v1
+[[ -f "$apps/$nightly_id.desktop" && ! -e "$apps/ai.storyteller.anicraft.desktop" ]]
+for line in 'Name=AniCraft Nightly' 'Exec=anicraft-nightly %f' 'TryExec=anicraft-nightly' \
+  "Icon=$nightly_id" "StartupWMClass=$nightly_id"; do
+  grep -qxF "$line" "$apps/$nightly_id.desktop" || { echo "missing desktop line: $line" >&2; exit 1; }
+done
+! grep -q '^MimeType=' "$apps/$nightly_id.desktop"
+meta="$pack/share/metainfo/$nightly_id.metainfo.xml"
+[[ -f "$meta" && ! -e "$pack/share/metainfo/ai.storyteller.anicraft.metainfo.xml" ]]
+grep -qF "<id>$nightly_id</id>" "$meta"
+grep -qF '<name>AniCraft Nightly</name>' "$meta"
+grep -qF '<binary>anicraft-nightly</binary>' "$meta"
+! grep -qF '<mediatype>' "$meta"
+[[ ! -e "$pack/share/mime" ]]
+[[ -f "$pack/share/icons/hicolor/256x256/apps/$nightly_id.png" ]]
+
 export HOME="$work/home with space"
-unset XDG_DATA_HOME XDG_CONFIG_HOME
+unset XDG_DATA_HOME
 expect() {
   expected="$1"
   shift
@@ -45,11 +70,14 @@ expect() {
     exit 1
   fi
 }
-expect "XDG_CONFIG_HOME=<$HOME/.local/share/anicraft-nightly>"
-export XDG_DATA_HOME="$work/xdg with space"
-expect "$(printf 'XDG_CONFIG_HOME=<%s>\n<%s>\n<%s>\n' "$XDG_DATA_HOME/anicraft-nightly" 'scene with spaces.anicraft' '--other-name.anicraft')" \
+profile="$HOME/.local/share/anicraft-nightly/profile"
+expect "$(printf '<%s>\n' --launch-profile nightly-v1 --profile-root "$profile" --)"  # no arguments
+expect "$(printf '<%s>\n' --launch-profile nightly-v1 --profile-root "$profile" -- 'scene with spaces.anicraft' '--other-name.anicraft')" \
   'scene with spaces.anicraft' '--other-name.anicraft'
-expect "$(printf 'XDG_CONFIG_HOME=<>\n<--version>\n')" --version
-expect "$(printf 'XDG_CONFIG_HOME=<>\n<-V>\n')" -V
+expect "$(printf '<%s>\n' --launch-profile nightly-v1 --profile-root "$profile" --version)" --version
+expect "$(printf '<%s>\n' --launch-profile nightly-v1 --profile-root "$profile" -V)" -V
+export XDG_DATA_HOME="$work/xdg with space"
+profile="$XDG_DATA_HOME/anicraft-nightly/profile"
+expect "$(printf '<%s>\n' --launch-profile nightly-v1 --profile-root "$profile" -- 'scene with spaces.anicraft')" 'scene with spaces.anicraft'
 
-echo "PASS: Arch Nightly handoff isolates the profile and preserves launch arguments"
+echo "PASS: Arch Nightly handoff starts through the shared launcher in its own profile"

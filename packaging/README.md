@@ -46,14 +46,15 @@ their required fields once they exist.
 
 The preview channel the ArtCraft Launcher installs beside stable AniCraft has its own scripts,
 which the stable ones never source: `nightly-common.sh` (the four `ANICRAFT_*` values and the
-frozen, clean tree), `linux/nightly.sh`, `macos/nightly.{sh,sh-sign,sh-verify}` with
+frozen, clean tree), `linux/nightly.sh` with `linux/nightly-launch.sh` (the one launcher every
+Linux nightly format installs), `macos/nightly.{sh,sh-sign,sh-verify}` with
 `macos/nightly-lib.sh` and `macos/nightly_plist.py`, and `windows/nightly.ps1` behind
 `windows/package.ps1 -Nightly -BuildOnly`. Every artifact is GUI only: no `anicraft-cli`, portable
 marker, `.desktop`, DMG, association or URL type. Signing is the trusted step's
 (`windows/sign.ps1 -Required`, `macos/nightly-sign.sh`, the Linux key in `.github/`).
 
-`nightly-tests.py` runs the synthetic suites (archive policy, icon/plist rendering, and the Apple
-scripts against stand-in tools), and `windows/nightly-{package,signing}-tests.ps1` check the
+`nightly-tests.py` runs the synthetic suites (archive policy, the launcher in each format's
+layout, icon/plist rendering, and the Apple scripts against stand-in tools), and `windows/nightly-{package,signing}-tests.ps1` check the
 spec, the source identity, the flavor binding and the compiler/signer boundary. The three
 platforms are built for real, unsigned, by `.github/workflows/nightly-builds.yml` behind the
 `full-ci` label. See `docs/nightly-builds.md` for the contract and the data root.
