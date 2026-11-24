@@ -101,8 +101,12 @@ fn header(app: &mut App, ui: &mut egui::Ui, ctx: &egui::Context) {
         ui.add(egui::Image::new((crate::app::app_mark(ctx).id(), vec2(44.0, 44.0))));
         ui.add_space(8.0);
         ui.vertical(|ui| {
-            ui.label(text(Type::Title, "AniCraft")); // i18n-exempt: the product name
-            ui.label(text(Type::Caption, tr!("Version {version} · {stage}", version = env!("CARGO_PKG_VERSION"), stage = crate::i18n::t(crate::app::RELEASE_STAGE))));
+            ui.label(text(Type::Title, crate::platform::name()));
+            if crate::platform::stable_services_allowed() {
+                ui.label(text(Type::Caption, tr!("Version {version} · {stage}", version = env!("ANICRAFT_BUILT_VERSION"), stage = crate::i18n::t(crate::app::RELEASE_STAGE))));
+            } else {
+                ui.label(text(Type::Caption, tr!("Version {version}", version = env!("ANICRAFT_BUILT_VERSION"))));
+            }
         });
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             let back = ui.add(egui::Button::new(tr!("Back to the document")).shortcut_text(text(Type::Key, "Esc"))); // i18n-exempt: a key name

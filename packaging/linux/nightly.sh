@@ -1,26 +1,33 @@
 #!/usr/bin/env bash
 # App-owned GUI-only nightly tar: no FUSE/AppImage, CLI, association or install hooks.
+#
+#   $DIST/anicraft-<version>-linux-x86_64-nightly.tar.gz
+#
+# Usage: packaging/linux/nightly.sh --arch x86_64
+#
+# The optional distribution formats stay the stable scripts' (packaging/linux/package.sh,
+# flatpak-oci.sh), which take ANICRAFT_BUILD_CHANNEL for a co-installable nightly package.
 set -euo pipefail
 ARCH=
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --arch) [[ $# -ge 2 ]] || { echo 'missing --arch value' >&2; exit 2; }; ARCH="$2"; shift 2 ;;
-    -h|--help) echo 'Usage: nightly.sh --arch x86_64'; exit 0 ;;
+    -h|--help) sed -n '2,10p' "$0"; exit 0 ;;
     *) echo "unsupported nightly argument: $1" >&2; exit 2 ;;
   esac
 done
 [[ "$ARCH" == x86_64 && "$(uname -s)" == Linux ]] || { echo 'only native Linux x86_64 nightly packaging is supported' >&2; exit 2; }
-# shellcheck source=../nightly-common.sh
 . "$(dirname "${BASH_SOURCE[0]}")/../nightly-common.sh"
 nightly_init linux "$ARCH" x86_64-unknown-linux-gnu
 OUTPUT="$DIST/anicraft-$VERSION-linux-x86_64-nightly.tar.gz"
 [[ ! -e "$OUTPUT" && ! -L "$OUTPUT" ]] || nightly_die 'refusing to replace an existing nightly archive'
+nightly_refuse_signing_env
 nightly_build_gui
 STAGE="$NIGHTLY_WORK/stage"
 mkdir -p "$STAGE"
 cp "$NIGHTLY_GUI" "$STAGE/anicraft"
 chmod 755 "$STAGE/anicraft"
-cp "$ROOT/assets/app-icon/anicraft-1024.png" "$STAGE/anicraft.png"
+cp "$ROOT/assets/app-icon/anicraft-nightly.png" "$STAGE/anicraft-nightly.png"
 nightly_copy_notices "$STAGE"
 # The private mktemp cwd is the helper authority root, not a CLI path parent.
 (cd "$NIGHTLY_WORK" && python3 "$ROOT/packaging/nightly-archive.py" linux stage archive.tar.gz)

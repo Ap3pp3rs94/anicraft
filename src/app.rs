@@ -684,6 +684,11 @@ pub struct App {
     pub templates: crate::templates::Templates,
     /// Saved commands (ADR 0097): the folder's list, the History panel's picks, their windows.
     pub macros: crate::macros_ui::Macros,
+    /// Runs once when the window closes, inside `on_exit`: on macOS every quit ends the process
+    /// inside AppKit's terminate, so code after `run_native` never runs there (the Nightly
+    /// session record is finished here; `src/nightly_session.rs`).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub at_exit: Option<Box<dyn FnOnce()>>,
 }
 
 /// How often (seconds) the system's contrast and light or dark setting are asked again (ADR 0064).
@@ -969,6 +974,8 @@ impl App {
             thumbs: Default::default(),
             templates: Default::default(),
             macros: Default::default(),
+            #[cfg(not(target_arch = "wasm32"))]
+            at_exit: None,
         };
         // Your themes (ADR 0117), before the look is first applied. Tests and screenshot runs
         // read no folder of the computer's unless one is named.
@@ -4506,16 +4513,25 @@ impl App {
 
     fn about_window(&mut self, ctx: &egui::Context) {
         let mut open = self.show_about;
-        let shown = crate::windows::new(ctx, tr!("About AniCraft")).id(egui::Id::new("about_window")).open(&mut open).collapsible(false).resizable(false).show(ctx, |ui| {
+        let nightly = !crate::platform::stable_services_allowed();
+        let title = if nightly { tr!("About AniCraft Nightly") } else { tr!("About AniCraft") };
+        let shown = crate::windows::new(ctx, title).id(egui::Id::new("about_window")).open(&mut open).collapsible(false).resizable(false).show(ctx, |ui| {
             ui.add(egui::Image::new((app_mark(ctx).id(), egui::vec2(64.0, 64.0))));
-            ui.heading("AniCraft");
-            ui.label(tr!("Version {version} · {stage}", version = env!("CARGO_PKG_VERSION"), stage = crate::i18n::t(RELEASE_STAGE)));
+            ui.heading(crate::platform::name());
+            if nightly {
+                ui.label(tr!("Version {version}", version = env!("ANICRAFT_BUILT_VERSION")));
+                let commit = env!("ANICRAFT_BUILD_SHA");
+                ui.label(tr!("Built from commit {commit}", commit = &commit[..12.min(commit.len())]));
+                ui.label(tr!("This preview build is managed by ArtCraft Launcher; its updates come from there."));
+            } else {
+                ui.label(tr!("Version {version} · {stage}", version = env!("ANICRAFT_BUILT_VERSION"), stage = crate::i18n::t(RELEASE_STAGE)));
+            }
             ui.label(tr!("Open-source 2D vector animation studio, written in Rust."));
             ui.label(trn!("{n} engine command — all available headless via anicraft-cli.", "{n} engine commands — all available headless via anicraft-cli.", commands().len()));
             ui.colored_label(T.text_dim, "MIT OR Apache-2.0"); // i18n-exempt: licence identifiers
             ui.label(theme::text(theme::Type::Caption, tr!("Typefaces: {fonts}", fonts = theme::font_summary())));
         });
-        crate::a11y::name_title_bar(&shown, tr!("About AniCraft"));
+        crate::a11y::name_title_bar(&shown, title);
         self.show_about = open;
     }
 
@@ -4715,9 +4731,17 @@ impl eframe::App for App {
         let clean = self.allow_close || self.shot.is_some();
         crate::tabs::finish_all(self, clean);
         #[cfg(not(target_arch = "wasm32"))]
-        self.updates.finish();
+        if crate::platform::stable_services_allowed() {
+            self.updates.finish();
+        }
         #[cfg(not(target_arch = "wasm32"))]
         crate::remote::finish(self);
+        // Last, and once: macOS has no code path after `run_native`, so a clean quit is finished
+        // here. Elsewhere `main`'s return path calls the same hook, which by then is a no-op.
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(hook) = self.at_exit.take() {
+            hook();
+        }
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {

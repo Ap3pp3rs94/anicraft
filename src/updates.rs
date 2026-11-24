@@ -9,6 +9,11 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// A pinned, nightly, or unknown launcher choice must never be replaced by a stable update.
 fn stable_choice() -> Result<(), String> {
+    // The Nightly build's version is the Launcher's alone (`docs/nightly-release-preparation.md`),
+    // so its own updates are off whatever the pins say: it never reads the shared pins store.
+    if !crate::platform::stable_services_allowed() {
+        return Err(tr!("AniCraft Nightly is updated by ArtCraft Launcher. Change its version there.").into());
+    }
     if Pins::load_default().choice(APP.id) == Choice::Stable {
         Ok(())
     } else {

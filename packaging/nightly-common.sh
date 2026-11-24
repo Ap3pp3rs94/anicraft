@@ -1,5 +1,6 @@
 # shellcheck shell=bash
-# Shared setup for app-owned native nightly archives; stable packaging does not source this file.
+# Shared setup for AniCraft's own native nightly archives; stable packaging does not source this
+# file. PhotoCraft's `packaging/nightly-common.sh`, with this app's names and its GUI build.
 
 nightly_die() { printf 'error: %s\n' "$*" >&2; exit 2; }
 
@@ -22,9 +23,11 @@ nightly_init() {
   if [[ -n "${CRAFT_FONTS_DIR:-}" && ! -d "$CRAFT_FONTS_DIR/fonts" ]]; then
     nightly_die 'declared CRAFT_FONTS_DIR has no fonts directory'
   fi
-  # env.sh retains the established notice copier. Required values above prohibit its stable fallbacks.
-  # shellcheck source=env.sh
+  # env.sh keeps the established notice copier and the ANICRAFT_ prefix. Required values above
+  # prohibit its stable fallbacks.
+  export ANICRAFT_VERSION
   . "$ROOT/packaging/env.sh"
+  [[ "$VERSION" == "$ANICRAFT_VERSION" ]] || nightly_die 'the prepared version and env.sh disagree'
   export CARGO_TARGET_DIR="$CARGO_TARGET_DIR/nightly-v1/$os-$arch"
   NIGHTLY_RUST_TARGET="$target"
   mkdir -p "$CARGO_TARGET_DIR"
@@ -33,9 +36,11 @@ nightly_init() {
 }
 
 # Compile only: macOS runs the version query after signing (packaging/macos/nightly-verify.sh).
+# The GUI alone, with the default features of a stable build (sound output and the GPU stage): the
+# nightly archive has no anicraft-cli.
 nightly_compile_gui() {
-  (cd "$ROOT" && ANICRAFT_OVERRIDE_VERSION="$VERSION" cargo build --release --locked -p anicraft --target "$NIGHTLY_RUST_TARGET")
-  NIGHTLY_GUI="$CARGO_TARGET_DIR/$NIGHTLY_RUST_TARGET/release/anicraft"
+  (cd "$ROOT" && cargo build --release --locked -p anicraft --target "$NIGHTLY_RUST_TARGET")
+  NIGHTLY_GUI="$CARGO_TARGET_DIR/$NIGHTLY_RUST_TARGET/release/anicraft$([[ "$NIGHTLY_RUST_TARGET" == *windows* ]] && printf '.exe')"
   [[ -f "$NIGHTLY_GUI" && ! -L "$NIGHTLY_GUI" ]] || nightly_die 'the owned GUI build did not produce a regular executable'
   [[ "$(git -C "$ROOT" rev-parse HEAD)" == "$ANICRAFT_BUILD_SHA" && -z "$(git -C "$ROOT" status --porcelain)" ]] || nightly_die 'source changed during the build'
 }

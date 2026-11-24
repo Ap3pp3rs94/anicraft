@@ -58,7 +58,9 @@ fn read_entry(app: &mut App, d: &Desktop) -> Entry {
 /// user said yes once. Otherwise, the first time only, offer to add it, unless this copy is
 /// portable (portable copies leave no trace on the computer).
 pub fn at_start(app: &mut App) {
-    if app.shot.is_some() {
+    // Nightly keeps everything in its own profile and writes no applications-menu entry, even
+    // when it was started from an AppImage (`src/profile_root.rs`).
+    if app.shot.is_some() || !crate::platform::stable_services_allowed() {
         return;
     }
     let (Some(appimage), Some(data_home)) = (crate::platform::appimage(), crate::platform::data_home()) else { return };
@@ -162,12 +164,14 @@ pub fn about(app: &App, ui: &mut egui::Ui, label_w: f32) -> Option<Act> {
     let mut act = None;
     let place = crate::platform::placement();
     form_row(ui, label_w, tr!("Version"), |ui| {
-        ui.label(text(Type::Data, env!("CARGO_PKG_VERSION")));
+        ui.label(text(Type::Data, env!("ANICRAFT_BUILT_VERSION")));
         ui.label(text(Type::Caption, crate::platform::OS.name()));
     });
     form_row(ui, label_w, tr!("This copy"), |ui| {
         let mode = if crate::platform::WEB {
             tr!("In the browser: settings are kept in this site's storage")
+        } else if place.profile.is_some() {
+            tr!("Nightly: everything is kept in this preview's own profile, apart from AniCraft")
         } else if place.portable.is_some() {
             tr!("Portable: everything is kept in the data folder beside AniCraft")
         } else {

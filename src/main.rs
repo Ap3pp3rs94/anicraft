@@ -29,6 +29,8 @@ mod audio_keys;
 mod autosave;
 mod brush_panel;
 mod brushtool;
+#[cfg(not(target_arch = "wasm32"))]
+mod build_flavor;
 mod colour;
 mod colour_panel;
 mod envelope;
@@ -59,6 +61,8 @@ mod gpu_watch;
 mod gradient_tool;
 mod icons;
 mod keymap;
+#[cfg(not(target_arch = "wasm32"))]
+mod launch_profile;
 mod library;
 mod menus;
 #[cfg(not(target_arch = "wasm32"))]
@@ -66,6 +70,8 @@ mod updates;
 mod mixed;
 mod motion_editor;
 mod movie_explorer;
+#[cfg(not(target_arch = "wasm32"))]
+mod nightly_session;
 mod panels;
 mod parenting;
 mod motion_path;
@@ -82,6 +88,10 @@ mod macros_ui_tests;
 mod macros_ui;
 mod plugins_ui;
 mod prefs;
+#[cfg(not(target_arch = "wasm32"))]
+mod process_identity;
+#[cfg(not(target_arch = "wasm32"))]
+mod profile_root;
 mod recent;
 #[cfg(not(target_arch = "wasm32"))]
 mod remote;
@@ -114,6 +124,8 @@ mod workspaces_window;
 
 #[cfg(not(target_arch = "wasm32"))]
 use anicraft_engine::Session;
+#[cfg(not(target_arch = "wasm32"))]
+use std::io::Write as _;
 #[cfg(not(target_arch = "wasm32"))]
 use std::path::{Path, PathBuf};
 
@@ -169,10 +181,25 @@ struct Look {
     shot_width: Option<u32>,
 }
 
+/// This run's Nightly session record, shared with the window's exit hook, and what the first
+/// window says about it. `session` is read by the exit hook, which only macOS has.
 #[cfg(not(target_arch = "wasm32"))]
-fn run(attempt: startup::Attempt, file: Option<&Path>, shot: Option<PathBuf>, open: Option<String>, look: Look, control: Option<u16>) -> eframe::Result {
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+#[derive(Clone)]
+struct Nightly {
+    session: nightly_session::Shared,
+    /// The record of a session that did not finish (shown once, then cleared).
+    previous_unclean: bool,
+    /// The record could not be taken: a secondary window, or a profile that refused it.
+    health_warning: bool,
+    /// Set once a window showed the interruption, so the record is not cleared before it is.
+    notice_shown: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn run(attempt: startup::Attempt, file: Option<&Path>, shot: Option<PathBuf>, open: Option<String>, look: Look, control: Option<u16>, nightly: Nightly) -> eframe::Result {
     let options = attempt.options(eframe::NativeOptions {
-        viewport: platform::viewport(egui::ViewportBuilder::default().with_title("AniCraft").with_inner_size([1600.0, 940.0]).with_min_inner_size([960.0, 600.0])),
+        viewport: platform::viewport(egui::ViewportBuilder::default().with_title(platform::name()).with_inner_size([1600.0, 940.0]).with_min_inner_size([960.0, 600.0])),
         ..Default::default()
     });
     // The embedded interface font joins the text library before anything lays text out:
@@ -183,7 +210,7 @@ fn run(attempt: startup::Attempt, file: Option<&Path>, shot: Option<PathBuf>, op
     let (session, report) = open_session(file);
     let file_given = file.map(Path::to_path_buf);
     eframe::run_native(
-        "AniCraft",
+        platform::name(),
         options,
         Box::new(move |cc| {
             // A document the system hands over while AniCraft is idle wakes it (ADR 0062).
@@ -191,6 +218,23 @@ fn run(attempt: startup::Attempt, file: Option<&Path>, shot: Option<PathBuf>, op
             startup::log_adapter(cc.wgpu_render_state.as_ref());
             let starting_fresh = file_given.is_none() && shot.is_none();
             let mut a = app::App::new(cc, session, shot);
+            // The previous Nightly session did not finish, or this window cannot record its own:
+            // said once, in the status bar, as the recovery notes are.
+            if nightly.previous_unclean {
+                a.status_err(tr!("The previous AniCraft Nightly session did not finish normally. The start-up log in Preferences › About says what it did last; no report has been sent."));
+                nightly.notice_shown.store(true, std::sync::atomic::Ordering::Relaxed);
+            } else if nightly.health_warning {
+                a.status_err(tr!(
+                    "AniCraft Nightly could not record its session health in its profile. You can still edit, but an abnormal exit is not noticed."
+                ));
+            }
+            // macOS has no code path after `run_native`: a clean quit finishes here.
+            #[cfg(target_os = "macos")]
+            {
+                let shared = nightly.session.clone();
+                let shown = nightly.notice_shown.clone();
+                a.at_exit = Some(Box::new(move || nightly_session::finish_once(&shared, shown.load(std::sync::atomic::Ordering::Relaxed))));
+            }
             // A file named on the command line keeps its tab, even an imported one (ADR 0112).
             if file_given.is_some() {
                 a.tabs.keep_first();
@@ -198,7 +242,7 @@ fn run(attempt: startup::Attempt, file: Option<&Path>, shot: Option<PathBuf>, op
             if let Some(s) = a.shot.as_mut() {
                 s.width = look.shot_width;
             }
-            if a.shot.is_none() {
+            if a.shot.is_none() && platform::stable_services_allowed() {
                 a.show_update_outcome_on_start();
             }
             // No document to open: the start screen, unless it was switched off (ADR 0059).
@@ -318,16 +362,122 @@ const HELP: &str = "anicraft [file.anicraft|file.fla|file.xfl] [--version] [--sc
                   (also ANICRAFT_CONTROL_PORT; 9878 by convention; see docs/control-protocol.md)\n\
      Headless use: anicraft-cli --help";
 
+/// The version `--version`, About and the Launcher's check print.
+#[cfg(not(target_arch = "wasm32"))]
+fn version_line() -> String {
+    let built = env!("ANICRAFT_BUILT_VERSION");
+    match build_flavor::COMPILED {
+        build_flavor::BuildFlavor::NightlyV1 => build_flavor::version(build_flavor::BuildFlavor::NightlyV1, built),
+        build_flavor::BuildFlavor::Stable => format!("{built} ({})", app::RELEASE_STAGE),
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn initialize_nightly_process_identity() -> Result<(), process_identity::IdentityError> {
+    process_identity::initialize(build_flavor::COMPILED == build_flavor::BuildFlavor::NightlyV1, platform::APP_ID_NIGHTLY)
+}
+
+/// Says why the launch profile was refused, on the console and (nightly, with a desktop) in a
+/// dialog: a windowed build has no console to show it on.
+#[cfg(not(target_arch = "wasm32"))]
+fn report_launch_profile_error(error: &str) {
+    eprintln!("AniCraft launch profile: {error}");
+    let desktop_session = cfg!(windows)
+        || cfg!(target_os = "macos")
+        || (cfg!(target_os = "linux") && ["DISPLAY", "WAYLAND_DISPLAY"].into_iter().any(|key| std::env::var_os(key).is_some_and(|v| !v.is_empty())));
+    if build_flavor::needs_native_error(build_flavor::COMPILED, desktop_session) {
+        if let Err(error) = initialize_nightly_process_identity() {
+            eprintln!("AniCraft launch profile: {error}");
+            return;
+        }
+        let _ = rfd::MessageDialog::new()
+            .set_title(tr!("AniCraft Nightly"))
+            .set_description(error)
+            .set_level(rfd::MessageLevel::Error)
+            .set_buttons(rfd::MessageButtons::Ok)
+            .show();
+    }
+}
+
+/// Selects the launch profile before any startup effect: no log line, no folder, no window, no
+/// update check. Returns the arguments the rest of the start reads, or `None` once `--version`
+/// has been answered (the only answer that comes before the profile is validated).
+#[cfg(not(target_arch = "wasm32"))]
+fn prepare_launch() -> Option<Vec<std::ffi::OsString>> {
+    let argv: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
+    // Plain `--version`, or the Launcher's `--launch-profile nightly-v1 --profile-root <dir>
+    // --version`: answered before root validation, process identity, IPC or any window.
+    if build_flavor::COMPILED == build_flavor::BuildFlavor::NightlyV1 && (build_flavor::version_query(&argv) || launch_profile::version_query(&argv))
+    {
+        let _ = writeln!(std::io::stdout(), "{} {}", platform::name_for(platform::LaunchIdentity::NightlyV1), version_line());
+        return None;
+    }
+    // Only a nightly build reads the wrapper's root, so a stable copy never sees the variable.
+    let wrapper_root = if build_flavor::COMPILED == build_flavor::BuildFlavor::NightlyV1 { std::env::var_os(launch_profile::ROOT_ENV) } else { None };
+    let early = launch_profile::parse_startup(argv, wrapper_root)
+        .and_then(|launch| {
+            build_flavor::require_profile(build_flavor::COMPILED, &launch.profile)?;
+            initialize_nightly_process_identity().map_err(|error| error.to_string())?;
+            Ok(launch)
+        })
+        .and_then(|launch| {
+            launch_profile::prepare(launch, |root| {
+                launch_profile::validate_root(root, |key| std::env::var_os(key), std::env::current_exe().ok().as_deref())
+            })
+        })
+        .unwrap_or_else(|error| {
+            report_launch_profile_error(&error);
+            std::process::exit(2)
+        });
+    let identity = if early.profile.is_nightly() { platform::LaunchIdentity::NightlyV1 } else { platform::LaunchIdentity::Stable };
+    if let Err(error) = launch_profile::install(early.profile).and_then(|()| platform::select_identity(identity)) {
+        report_launch_profile_error(&error);
+        std::process::exit(2);
+    }
+    Some(early.args)
+}
+
+/// `--control <port>` or `ANICRAFT_CONTROL_PORT`; a bad port stops the start, before a window.
+#[cfg(not(target_arch = "wasm32"))]
+fn control_port(flag: Option<u16>) -> Option<u16> {
+    match flag {
+        Some(p) => Some(p),
+        None => match std::env::var(anicraft_cli::control::PORT_ENV).ok().filter(|v| !v.trim().is_empty()) {
+            Some(v) => match anicraft_cli::control::parse_port(&v) {
+                Ok(p) => Some(p),
+                Err(e) => {
+                    eprintln!("{}: {e}", anicraft_cli::control::PORT_ENV);
+                    std::process::exit(2);
+                }
+            },
+            None => None,
+        },
+    }
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 fn main() -> eframe::Result {
-    if let Some(result) = updates::finish_helper() {
+    let Some(arguments) = prepare_launch() else { return Ok(()) };
+    // Nightly has no updater: the Launcher owns its version (`docs/nightly-release-preparation.md`).
+    if platform::stable_services_allowed()
+        && let Some(result) = updates::finish_helper()
+    {
         let failed = result.is_err();
         if let Err(error) = result {
             eprintln!("Update failed: {error}");
         }
         std::process::exit(i32::from(failed));
     }
-    let args = match parse_args(std::env::args().skip(1)) {
+    // A file name that is not Unicode cannot be opened; it is said rather than dropped silently
+    // (the launcher's arguments themselves were read as bytes in `prepare_launch`).
+    let mut words = Vec::with_capacity(arguments.len());
+    for argument in arguments {
+        match argument.into_string() {
+            Ok(word) => words.push(word),
+            Err(what) => eprintln!("AniCraft could not read a file name on the command line: {what:?}"), // i18n-exempt: a console message
+        }
+    }
+    let args = match parse_args(words) {
         Ok(a) => a,
         Err(e) => {
             eprintln!("{e}");
@@ -336,7 +486,7 @@ fn main() -> eframe::Result {
     };
     match args.print {
         Some(Print::Version) => {
-            println!("AniCraft {} ({})", env!("CARGO_PKG_VERSION"), app::RELEASE_STAGE);
+            println!("AniCraft {}", version_line());
             return Ok(());
         }
         Some(Print::Help) => {
@@ -363,20 +513,9 @@ fn main() -> eframe::Result {
         None => {}
     }
     let Args { shot, file, open, renderer, look, control, .. } = args;
-    // ANICRAFT_CONTROL_PORT when there is no --control; a bad port stops here, before a window.
-    let control = match control {
-        Some(p) => Some(p),
-        None => match std::env::var(anicraft_cli::control::PORT_ENV).ok().filter(|v| !v.trim().is_empty()) {
-            Some(v) => match anicraft_cli::control::parse_port(&v) {
-                Ok(p) => Some(p),
-                Err(e) => {
-                    eprintln!("{}: {e}", anicraft_cli::control::PORT_ENV);
-                    std::process::exit(2);
-                }
-            },
-            None => None,
-        },
-    };
+    // The control port is a stable service: Nightly never opens one, nor reads a port left in the
+    // environment by a launch that forwarded its variables.
+    let control = if platform::stable_services_allowed() { control_port(control) } else { None };
     // macOS hands documents over as Apple Events, the one that launched the app included: listen
     // from before the event loop starts until it ends (ADR 0062).
     let _documents = platform::listen_for_documents();
@@ -385,6 +524,23 @@ fn main() -> eframe::Result {
     // fails or panics before the window is up falls through to the next; a start that died
     // inside a driver last time tries that way last (#207, `startup`).
     let mut last = startup::begin(platform::log_dir());
+    // Nightly's own health record (`src/nightly_session.rs`): no document names or diagnostics,
+    // just whether the last session finished. Stable passes no root and touches nothing.
+    let (nightly_record, health_warning) = match nightly_session::Session::begin_with_health(
+        launch_profile::current().root(),
+        env!("ANICRAFT_BUILT_VERSION"),
+        Some(env!("ANICRAFT_BUILD_SHA")),
+    ) {
+        Ok(state) => state,
+        Err(error) => {
+            startup::line(&format!("Nightly session health is unavailable: {error}"));
+            (None, true)
+        }
+    };
+    let previous_unclean = nightly_record.as_ref().is_some_and(nightly_session::Session::previous_unclean);
+    let notice_shown = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let nightly_session: nightly_session::Shared = std::sync::Arc::new(std::sync::Mutex::new(nightly_record));
+    let nightly = Nightly { session: nightly_session.clone(), previous_unclean, health_warning, notice_shown: notice_shown.clone() };
     let mut file = file;
     let mut reopened = 0;
     let mut why = String::from("no attempt"); // i18n-exempt: log text
@@ -392,31 +548,32 @@ fn main() -> eframe::Result {
     let mut opening = true;
     // What the command line asks for is tried first, until a session loses its device on it.
     let mut forced = platform::forced_backend(renderer.as_deref());
-    while opening {
-        opening = false;
-        let attempts = startup::plan(forced, prefs::Prefs::load().window_backend, &platform::window_attempts(platform::OS), &last);
-        for (n, attempt) in attempts.iter().enumerate() {
-            startup::trying(attempt, n + 1, attempts.len());
-            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(*attempt, file.as_deref(), shot.clone(), open.clone(), look.clone(), control)));
-            why = match result {
-                Ok(Ok(())) => {
-                    // The window's graphics device was lost mid-session (ADR 0092): it closed
-                    // with the work autosaved, to open again another way, which offers it back.
-                    if let Some(reopen) = startup::take_reopen()
-                        && reopened < MAX_REOPENS
-                    {
-                        reopened += 1;
-                        startup::line(&format!("opening the window again, {} last", attempt.label()));
-                        last.retain(|l| *l != attempt.label());
-                        last.push(attempt.label());
-                        forced = None;
-                        file = reopen;
-                        opening = true;
-                        break;
+    let result: eframe::Result = 'attempts: {
+        while opening {
+            opening = false;
+            let attempts = startup::plan(forced, prefs::Prefs::load().window_backend, &platform::window_attempts(platform::OS), &last);
+            for (n, attempt) in attempts.iter().enumerate() {
+                startup::trying(attempt, n + 1, attempts.len());
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(*attempt, file.as_deref(), shot.clone(), open.clone(), look.clone(), control, nightly.clone())));
+                why = match result {
+                    Ok(Ok(())) => {
+                        // The window's graphics device was lost mid-session (ADR 0092): it closed
+                        // with the work autosaved, to open again another way, which offers it back.
+                        if let Some(reopen) = startup::take_reopen()
+                            && reopened < MAX_REOPENS
+                        {
+                            reopened += 1;
+                            startup::line(&format!("opening the window again, {} last", attempt.label()));
+                            last.retain(|l| *l != attempt.label());
+                            last.push(attempt.label());
+                            forced = None;
+                            file = reopen;
+                            opening = true;
+                            break;
+                        }
+                        startup::line("closed");
+                        break 'attempts Ok(());
                     }
-                    startup::line("closed");
-                    return Ok(());
-                }
                 Ok(Err(e)) => e.to_string(),
                 Err(p) => format!("{} panicked: {}", attempt.label(), startup::panic_text(p.as_ref())), // i18n-exempt: a log line
             };
@@ -428,7 +585,7 @@ fn main() -> eframe::Result {
                 if startup::is_graphics_failure(&why) {
                     startup::lost_mid_session();
                 }
-                return Err(eframe::Error::AppCreation(why.into()));
+                break 'attempts Err(eframe::Error::AppCreation(why.into()));
             }
             // It never came up: the next starts try it last, as one that died in a driver.
             startup::failed_to_open();
@@ -436,6 +593,13 @@ fn main() -> eframe::Result {
     }
     startup::give_up(&why);
     Err(eframe::Error::AppCreation(why.into()))
+    };
+    // A controlled return, even for a handled startup error. A renderer failure before the window
+    // (and so before any notice) has not shown an earlier interruption: the record stays, so the
+    // retry or the next start still reports it. On macOS a window that was created has already
+    // finished in its exit hook, so this is a no-op there.
+    nightly_session::finish_once(&nightly_session, notice_shown.load(std::sync::atomic::Ordering::Relaxed));
+    result
 }
 
 /// Times one run opens the window again after its graphics device was lost (ADR 0092); past

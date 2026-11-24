@@ -157,6 +157,10 @@ pollster.workspace = true
 # through craft-update.
 [target.'cfg(windows)'.dependencies]
 winreg = "0.55"
+# The Nightly build's explicit AppUserModelID, set before any window exists so the taskbar, the
+# Start menu and Alt-Tab keep Nightly apart from Stable (src/process_identity.rs). MIT, the same
+# version and features PhotoCraft pins; both modules are already in the tree through craft-update.
+winsafe = { version = "=0.0.29", default-features = false, features = ["user", "shell"] }
 
 # The web build (ADR 0036, docs/web.md). The window draws with WebGL2 (glow): every current
 # browser has it, the stage is drawn on the CPU there, and leaving wgpu out keeps the download

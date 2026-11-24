@@ -128,12 +128,32 @@ impl Args {
 /// [`USAGE_EXIT`] (AGENTS.md rule 18, ADR 0124).
 pub const ROOTS_REQUIRED: &str = "mcp needs --automation-read-root <folder> and --automation-write-root <folder>";
 
+/// How the error starts when the Nightly window's launch protocol is given to this tool.
+pub const NIGHTLY_PROTOCOL: &str = "--launch-profile and --profile-root belong to the AniCraft Nightly window";
+
 /// The exit code of a refused start: the command line is missing something.
 pub const USAGE_EXIT: i32 = 2;
 
 /// The exit code for an error from [`run`].
 pub fn exit_code(error: &str) -> i32 {
-    if error.starts_with(ROOTS_REQUIRED) || error.starts_with("--automation-") || error.starts_with("flag --automation-") { USAGE_EXIT } else { 1 }
+    if error.starts_with(ROOTS_REQUIRED)
+        || error.starts_with(NIGHTLY_PROTOCOL)
+        || error.starts_with("--automation-")
+        || error.starts_with("flag --automation-")
+    {
+        USAGE_EXIT
+    } else {
+        1
+    }
+}
+
+/// The Nightly launcher's two arguments, if the command line carries either (also as `=` forms):
+/// this headless tool has no launch profile and no window to put in one, so it refuses them before
+/// any subcommand is read.
+pub fn nightly_protocol_argument(argv: &[String]) -> Option<&str> {
+    argv.iter()
+        .find(|a| *a == "--launch-profile" || *a == "--profile-root" || a.starts_with("--launch-profile=") || a.starts_with("--profile-root="))
+        .map(String::as_str)
 }
 
 /// The folders given with `--automation-read-root` (once or more) and `--automation-write-root`
@@ -249,6 +269,11 @@ pub fn subcommand_usage(cmd: &str) -> Option<String> {
 
 /// Runs the CLI; returns the text to print on success.
 pub fn run(argv: &[String]) -> Result<String, String> {
+    if let Some(argument) = nightly_protocol_argument(argv) {
+        return Err(format!(
+            "{NIGHTLY_PROTOCOL} (`{argument}`); anicraft-cli is the stable headless front end. Run `anicraft --launch-profile nightly-v1 --profile-root <folder> --` instead."
+        ));
+    }
     let Some((cmd, rest)) = argv.split_first() else { return Ok(USAGE.to_string()) };
     if cmd == "help" || cmd == "--help" || cmd == "-h" {
         if let Some(sub) = rest.first().filter(|s| *s != "--help" && *s != "-h") {

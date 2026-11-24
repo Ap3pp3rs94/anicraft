@@ -15,54 +15,7 @@ import sys
 import tarfile
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-try:
-    from nightly_paths import OwnedBuildRoot
-except ImportError:
-    class OwnedBuildRoot:
-        """Minimal owned-root helper when nightly_paths.py is not installed alongside."""
-
-        def __init__(self, directory=None):
-            self.directory = os.path.realpath(directory or os.getcwd())
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, tb):
-            return False
-
-        def _resolve(self, rel):
-            candidate = os.path.realpath(os.path.join(self.directory, os.fspath(rel)))
-            if candidate != self.directory and not candidate.startswith(self.directory + os.sep):
-                raise ValueError(f"path escapes owned build root: {rel}")
-            return pathlib.Path(candidate)
-
-        def children(self, stage, max_members):
-            stage_path = self._resolve(stage)
-            items = list(stage_path.iterdir())
-            if len(items) > max_members:
-                raise ValueError("nightly stage exceeds max member count")
-            return items
-
-        def reader(self, entry, max_bytes):
-            path = self._resolve(entry)
-            fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
-            try:
-                st = os.fstat(fd)
-                if not stat.S_ISREG(st.st_mode):
-                    raise ValueError(f"nightly member must be a regular file: {path.name}")
-                if st.st_size > max_bytes:
-                    raise ValueError(f"nightly member exceeds size limit: {path.name}")
-                return os.fdopen(fd, "rb")
-            except BaseException:
-                os.close(fd)
-                raise
-
-        def create(self, output):
-            path = self._resolve(output)
-            flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
-            fd = os.open(path, flags, 0o644)
-            return os.fdopen(fd, "wb")
-
+from nightly_paths import OwnedBuildRoot
 
 APP_DOCS = {"README.md", "LICENSE", "LICENSE-MIT", "LICENSE-APACHE", "COPYRIGHT", "NOTICE", "ATTRIBUTION.md"}
 MAX_MEMBER_BYTES = 512 * 1024 * 1024
@@ -80,7 +33,7 @@ def checked_entries(root, stage):
     total = 0
     for entry in entries:
         name = entry.name
-        if name not in {"anicraft", "anicraft.png"} and not notice(name):
+        if name not in {"anicraft", "anicraft-nightly.png"} and not notice(name):
             raise ValueError(f"unexpected nightly member: {name}")
         if len(name.encode("utf-8")) > 100:
             raise ValueError(f"nightly member must be a short regular file: {name}")
@@ -91,7 +44,7 @@ def checked_entries(root, stage):
         if name.casefold() in folded:
             raise ValueError(f"case-colliding nightly member: {name}")
         folded.add(name.casefold())
-    required = {"anicraft", "anicraft.png", "README.md", "LICENSE-MIT", "LICENSE-APACHE", "NOTICE", "ATTRIBUTION.md"}
+    required = {"anicraft", "anicraft-nightly.png", "README.md", "LICENSE-MIT", "LICENSE-APACHE", "NOTICE", "ATTRIBUTION.md"}
     if not required.issubset({item.name for item in entries}):
         raise ValueError("required GUI/icon/notices missing")
     return entries
