@@ -31,7 +31,7 @@ bin="$work/installed/bin"
 mv "$bin/anicraft" "$bin/anicraft-nightly"
 mv "$bin/anicraft-cli" "$bin/anicraft-nightly-cli"
 
-test ! -e "$stage/bin/.anicraft-nightly"
+[[ ! -e "$stage/bin/.anicraft-nightly" ]]
 cmp "$stage/bin/anicraft" "$bin/.anicraft-nightly/anicraft"
 cmp "$stage/bin/anicraft-cli" "$bin/anicraft-nightly-cli"
 export HOME="$work/home with space"
