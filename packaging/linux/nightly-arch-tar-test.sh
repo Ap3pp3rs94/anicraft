@@ -79,5 +79,18 @@ expect "$(printf '<%s>\n' --launch-profile nightly-v1 --profile-root "$profile" 
 export XDG_DATA_HOME="$work/xdg with space"
 profile="$XDG_DATA_HOME/anicraft-nightly/profile"
 expect "$(printf '<%s>\n' --launch-profile nightly-v1 --profile-root "$profile" -- 'scene with spaces.anicraft')" 'scene with spaces.anicraft'
+# The Launcher's own command line is passed through, not wrapped a second time.
+expect "$(printf '<%s>\n' --launch-profile nightly-v1 --profile-root "$work/launcher-profile" -- 'scene.anicraft')" \
+  --launch-profile nightly-v1 --profile-root "$work/launcher-profile" -- 'scene.anicraft'
+
+# The handoff can be unpacked under a folder another local user may write, so a program planted in
+# a sibling lib folder is never run in place of the packaged one.
+planted="$work/planted"
+mkdir -p "$planted/lib/anicraft-nightly" "$planted/bin/.anicraft-nightly"
+cp "$pack/bin/anicraft" "$planted/bin/anicraft"
+cp "$stage/bin/anicraft" "$planted/bin/.anicraft-nightly/anicraft"
+printf '#!/bin/sh\necho PLANTED-BY-ANOTHER-USER\n' >"$planted/lib/anicraft-nightly/anicraft"
+chmod 755 "$planted/lib/anicraft-nightly/anicraft"
+[[ "$("$planted/bin/anicraft" walk.anicraft)" != PLANTED* ]]
 
 echo "PASS: Arch Nightly handoff starts through the shared launcher in its own profile"

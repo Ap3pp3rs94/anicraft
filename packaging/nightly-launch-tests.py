@@ -42,26 +42,22 @@ class Layout(unittest.TestCase):
         return path
 
     def layouts(self):
+        """The bundle layouts, each run in place. The deb/rpm is not among them: a test host cannot
+        install into /usr/bin, so that one arm is pinned by contract and by failing closed (below)."""
         made = {}
         base = self.root / "layouts"
-        # deb/rpm: /usr/bin/anicraft-nightly runs /usr/lib/anicraft-nightly/anicraft
-        prefix = base / "usr"
-        made["deb-rpm"] = (
-            self.launcher(prefix / "bin/anicraft-nightly"),
-            self.script(prefix / "lib/anicraft-nightly/anicraft"),
-        )
         # AppImage: AppRun at the AppDir root runs usr/bin/anicraft
         appdir = base / "AniCraft.AppDir"
         made["appimage"] = (self.launcher(appdir / "AppRun"), self.script(appdir / "usr/bin/anicraft"))
         # Arch handoff: bin/anicraft runs bin/.anicraft-nightly/anicraft
         arch = base / "arch"
         made["arch"] = (self.launcher(arch / "bin/anicraft"), self.script(arch / "bin/.anicraft-nightly/anicraft"))
-        # Flatpak: /app/bin/anicraft-nightly runs /app/bin/anicraft
+        # Flatpak: /app/bin/anicraft-nightly runs /app/bin/anicraft-bin
         flatpak = base / "app"
-        made["flatpak"] = (self.launcher(flatpak / "bin/anicraft-nightly"), self.script(flatpak / "bin/anicraft"))
-        # nightly tar: anicraft-nightly runs the anicraft beside it
+        made["flatpak"] = (self.launcher(flatpak / "bin/anicraft-nightly"), self.script(flatpak / "bin/anicraft-bin"))
+        # nightly tar, the standard layout: the launcher `anicraft` runs `anicraft-bin` beside it
         tar = base / "tar"
-        made["tar"] = (self.launcher(tar / "anicraft-nightly"), self.script(tar / "anicraft"))
+        made["tar"] = (self.launcher(tar / "anicraft"), self.script(tar / "anicraft-bin"))
         return made
 
     def run_launcher(self, command, *arguments, env=None, cwd=None):
@@ -90,17 +86,52 @@ class Layout(unittest.TestCase):
             with self.subTest(layout=name):
                 self.assertEqual(self.arguments(self.run_launcher(command, *files)), self.protocol(*files))
 
-    def test_a_co_installed_stable_program_is_never_used(self):
-        # deb/rpm: /usr/bin/anicraft is stable's program, so the launcher must take the packaged
-        # nightly one from /usr/lib even though a same-named file sits beside it.
-        self.layouts()
-        prefix = self.root / "layouts/usr"
-        stable = prefix / "bin/anicraft"
-        stable.write_text(RECORDER.replace("for arg", "# the stable program must never run\nfor arg"))
-        stable.chmod(0o755)
-        result = self.run_launcher(prefix / "bin/anicraft-nightly", "walk.anicraft")
-        self.assertEqual(self.arguments(result), self.protocol("walk.anicraft"))
-        self.assertNotIn("stable", result.stdout)
+    def test_the_system_install_is_one_absolute_path_behind_the_bin_check(self):
+        # A deb/rpm install is the only layout with the program in a lib folder, and there it is one
+        # fixed absolute path, reached only when the launcher really is in /usr/bin. No candidate is
+        # ever computed from `..`, so no bundle can plant one beside itself.
+        launcher = LAUNCHER.read_text()
+        self.assertIn('[ "$here" = /usr/bin ]', launcher)
+        self.assertIn('/usr/lib/anicraft-nightly/anicraft ', launcher)
+        self.assertNotIn("..", launcher)
+
+    def test_outside_usr_bin_a_co_installed_stable_program_and_a_planted_lib_are_both_refused(self):
+        # The deb/rpm launcher run from anywhere but /usr/bin: a stable `anicraft` beside it and a
+        # program planted in a sibling lib folder are not ours, so it refuses instead of running one.
+        prefix = self.root / "prefix"
+        command = self.launcher(prefix / "bin/anicraft-nightly")
+        self.script(prefix / "bin/anicraft", "#!/bin/sh\necho THE-STABLE-PROGRAM\n")
+        self.script(prefix / "lib/anicraft-nightly/anicraft", "#!/bin/sh\necho PLANTED-BY-ANOTHER-USER\n")
+        result = self.run_launcher(command, "walk.anicraft")
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("not where this launcher was installed", result.stderr)
+        self.assertEqual(result.stdout, "")
+
+    def test_a_planted_program_beside_a_bundle_is_never_run(self):
+        # An AppImage mount and an extracted tar sit under a folder another local user may own, so a
+        # `../lib/anicraft-nightly/anicraft` there must never stand in for the bundle's own program.
+        layouts = self.layouts()
+        for name in ("appimage", "tar", "arch", "flatpak"):
+            command, _ = layouts[name]
+            for planted in (command.parent.parent / "lib/anicraft-nightly/anicraft",
+                            command.parent.parent / "lib/anicraft-nightly/anicraft-bin"):
+                self.script(planted, "#!/bin/sh\necho PLANTED-BY-ANOTHER-USER\n")
+            with self.subTest(layout=name):
+                result = self.run_launcher(command, "walk.anicraft")
+                self.assertEqual(self.arguments(result), self.protocol("walk.anicraft"))
+                self.assertNotIn("PLANTED", result.stdout)
+
+    def test_a_launcher_command_line_is_passed_through_unwrapped(self):
+        # The Launcher starts a package this way already: wrapping it again would hide its root.
+        supplied = self.protocol("scene.anicraft", data_home=self.root / "launcher-data")
+        for name, (command, _) in self.layouts().items():
+            with self.subTest(layout=name):
+                self.assertEqual(self.arguments(self.run_launcher(command, *supplied)), supplied)
+
+    def test_a_supplied_delimiter_is_not_doubled(self):
+        for name, (command, _) in self.layouts().items():
+            with self.subTest(layout=name):
+                self.assertEqual(self.arguments(self.run_launcher(command, "--", "scene.anicraft")), self.protocol("scene.anicraft"))
 
     def test_the_profile_follows_xdg_data_home(self):
         data_home = self.root / "xdg with space"
@@ -194,7 +225,7 @@ class InstallContract(unittest.TestCase):
         self.assertNotIn("<<'WRAPPER'", package)
         self.assertIn('install -Dm755 "$HERE/nightly-launch.sh" "$WORK/stage/bin/anicraft-nightly"', self.read("flatpak-bundle.sh"))
         self.assertIn('cp "$here/nightly-launch.sh" "$stage/bin/anicraft"', self.read("nightly-arch-tar.sh"))
-        self.assertIn('install -m755 "$ROOT/packaging/linux/nightly-launch.sh" "$STAGE/anicraft-nightly"', self.read("nightly.sh"))
+        self.assertIn('install -m755 "$ROOT/packaging/linux/nightly-launch.sh" "$STAGE/anicraft"', self.read("nightly.sh"))
         self.assertFalse((LINUX / "nightly-arch-launch.sh").exists(), "the Arch launcher is the shared one now")
 
     def test_no_format_still_moves_the_settings_folder_through_the_environment(self):
@@ -223,6 +254,25 @@ class InstallContract(unittest.TestCase):
         self.assertIn("Exec=anicraft-nightly", arch)
         self.assertIn("StartupWMClass=$nightly_id", arch)
 
+    def test_the_tar_is_the_standard_launcher_and_bin_layout(self):
+        # `<app>` is the launcher and `<app>-bin` the GUI it starts, as in every app in the batch,
+        # so an unpacked tar starts in its own profile and the shared smoke can query the entry.
+        nightly = self.read("nightly.sh")
+        self.assertIn('install -m755 "$NIGHTLY_GUI" "$STAGE/anicraft-bin"', nightly)
+        self.assertIn('install -m755 "$ROOT/packaging/linux/nightly-launch.sh" "$STAGE/anicraft"', nightly)
+        self.assertIn('[[ "$("$STAGE/anicraft" --version)" == "AniCraft $VERSION (nightly-v1)"', nightly)
+        archive = (HERE / "nightly-archive.py").read_text()
+        self.assertIn('"anicraft-bin"', archive)
+        self.assertNotIn('"anicraft-nightly",\n', archive)
+
+    def test_the_flatpak_runs_its_own_gui_and_never_asks_for_a_mime_database_it_drops(self):
+        flatpak = self.read("flatpak-bundle.sh")
+        # The sandbox's GUI is `anicraft-bin`, which is what the launcher looks for there.
+        self.assertIn("/app/bin/anicraft-bin", flatpak)
+        # Nightly deletes share/mime, so the default test must not list it (ls exits 2 under set -e).
+        self.assertIn("SHARE_PATHS='/app/share/applications /app/share/metainfo /app/share/icons/hicolor/*/apps'", flatpak)
+        self.assertIn("if [[ \"$FLATPAK_ID\" = \"$APP_ID\" ]]; then", flatpak)
+
     def test_nightly_metadata_declares_no_file_associations(self):
         for name in ("package.sh", "flatpak-bundle.sh", "nightly-arch-tar.sh"):
             with self.subTest(file=name):
@@ -242,23 +292,27 @@ class InstallContract(unittest.TestCase):
         self.assertNotIn("OVERRIDE_VERSION", common)
 
     def test_every_platform_checks_the_line_the_flavor_prints(self):
-        expected = 'AniCraft Nightly $VERSION (nightly-v1)'
+        # The contract's line is `<App> <version> (nightly-v1)`: the display name is not in it.
+        expected = 'AniCraft $VERSION (nightly-v1)'
         self.assertIn(f'"{expected}"', (HERE / "nightly-common.sh").read_text())
         self.assertIn(f'"{expected}"', (HERE / "linux/nightly.sh").read_text())
-        self.assertIn('"AniCraft Nightly $VERSION (nightly-v1)"', (HERE / "macos/nightly-verify.sh").read_text())
-        self.assertIn("AniCraft Nightly $ExpectedVersion (nightly-v1)", (HERE / "windows/nightly.ps1").read_text())
+        self.assertIn('"AniCraft $VERSION (nightly-v1)"', (HERE / "macos/nightly-verify.sh").read_text())
+        self.assertIn("AniCraft $ExpectedVersion (nightly-v1)", (HERE / "windows/nightly.ps1").read_text())
         workflow = (HERE.parent / ".github/workflows/nightly-builds.yml").read_text()
-        self.assertIn('"AniCraft Nightly $ANICRAFT_VERSION (nightly-v1)"', workflow)
-        self.assertIn('"AniCraft Nightly $env:ANICRAFT_VERSION (nightly-v1)"', workflow)
+        self.assertIn('"AniCraft $ANICRAFT_VERSION (nightly-v1)"', workflow)
+        self.assertIn('"AniCraft $env:ANICRAFT_VERSION (nightly-v1)"', workflow)
+        for name in ("nightly-common.sh", "macos/nightly-verify.sh", "windows/nightly.ps1"):
+            self.assertNotIn("AniCraft Nightly $", (HERE / name).read_text(), name)
 
     def test_the_expected_line_is_the_one_the_flavor_composes(self):
         root = HERE.parent
-        self.assertIn('LaunchIdentity::NightlyV1 => tr_noop!("AniCraft Nightly")', (root / "src/platform.rs").read_text())
         self.assertIn('BuildFlavor::NightlyV1 => format!("{stable} (nightly-v1)")', (root / "src/build_flavor.rs").read_text())
-        self.assertIn(
-            '"{} {}", platform::name_for(platform::LaunchIdentity::NightlyV1), version_line()',
-            (root / "src/main.rs").read_text(),
-        )
+        # Both queries use the same form: the prepared version, never the display name.
+        self.assertIn('writeln!(std::io::stdout(), "AniCraft {}", version_line())', (root / "src/main.rs").read_text())
+        self.assertIn('println!("AniCraft {}", version_line())', (root / "src/main.rs").read_text())
+        # The window title and the Windows ProductName keep the channel's display name.
+        self.assertIn('LaunchIdentity::NightlyV1 => tr_noop!("AniCraft Nightly")', (root / "src/platform.rs").read_text())
+        self.assertIn("if ($ProductName -ne 'AniCraft Nightly'", (HERE / "windows/nightly.ps1").read_text())
 
     def test_the_window_class_is_the_desktop_entry_class(self):
         platform = (HERE.parent / "src/platform.rs").read_text()

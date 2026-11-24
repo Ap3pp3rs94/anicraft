@@ -12,26 +12,42 @@
 #   deb/rpm   /usr/bin/anicraft-nightly   (the real program in /usr/lib/anicraft-nightly/)
 #   AppImage  $APPDIR/AppRun              (the real program in $APPDIR/usr/bin/)
 #   Arch      bin/anicraft                (the real program in bin/.anicraft-nightly/)
-#   Flatpak   /app/bin/anicraft-nightly   (the real program beside it)
-#   nightly tar  anicraft-nightly         (the real program beside it)
+#   Flatpak   /app/bin/anicraft-nightly   (the real program in /app/bin/anicraft-bin)
+#   nightly tar  anicraft                 (the real program in anicraft-bin beside it)
 set -eu
 case "$0" in
   */*) self=$0 ;;
   *) self=$(command -v -- "$0" 2>/dev/null || printf '%s' "$0") ;;
 esac
-here=$(CDPATH= cd -- "$(dirname -- "$self")" && pwd)
+# Physical, so a merged-`/usr` system's `/bin/<launcher>` is still the system install (/usr/bin).
+here=$(CDPATH= cd -P -- "$(dirname -- "$self")" && pwd -P)
 self="$here/$(basename -- "$self")"
 
-# Order matters: in a system install /usr/bin/anicraft is the *stable* program (the packages are
-# co-installable), so the packaged lib path is tried before any same-named sibling.
+# Picks the first candidate that is a regular program of the bundle (never this script itself).
+find_program() {
+  for candidate in "$@"; do
+    if [ -f "$candidate" ] && [ ! -L "$candidate" ] && ! [ "$candidate" -ef "$self" ]; then
+      printf '%s' "$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# Every candidate is either inside the bundle this launcher came with or the one fixed system path
+# a package installs into: no path is computed from a parent of `$here`, because an AppImage mount,
+# an extracted tar and the Arch handoff can sit under a folder another local user can write.
+# A stable program is never a candidate either (`/usr/bin/anicraft` is stable's, and the packages
+# are co-installable), so a co-installed Stable copy can never be started in Nightly's place.
 real_bin=
-for candidate in "$here/.anicraft-nightly/anicraft" "$here/../lib/anicraft-nightly/anicraft" "$here/anicraft" \
-  "$here/usr/bin/anicraft"; do
-  if [ -f "$candidate" ] && [ ! -L "$candidate" ] && ! [ "$candidate" -ef "$self" ]; then
-    real_bin=$candidate
-    break
-  fi
-done
+if [ "$here" = /usr/bin ]; then
+  # The deb/rpm puts the program in its own lib folder beside the system bin directory.
+  real_bin=$(find_program /usr/lib/anicraft-nightly/anicraft "$here/anicraft-bin" \
+    "$here/.anicraft-nightly/anicraft" "$here/usr/bin/anicraft") || :
+else
+  real_bin=$(find_program "$here/anicraft-bin" "$here/.anicraft-nightly/anicraft" \
+    "$here/usr/bin/anicraft") || :
+fi
 if [ -z "$real_bin" ]; then
   echo 'anicraft-nightly: the AniCraft Nightly program is not where this launcher was installed' >&2
   exit 2
@@ -39,6 +55,15 @@ fi
 
 profile_root="${XDG_DATA_HOME:-${HOME:?HOME is required to place the AniCraft Nightly profile}/.local/share}/anicraft-nightly/profile"
 
+# The Launcher already speaks this protocol: pass it through rather than wrap it a second time.
+case "${1:-}" in
+  --launch-profile | --profile-root) exec "$real_bin" "$@" ;;
+esac
+# A delimiter the caller supplied is never doubled.
+if [ "${1:-}" = "--" ]; then
+  shift
+  exec "$real_bin" --launch-profile nightly-v1 --profile-root "$profile_root" -- "$@"
+fi
 # `anicraft-nightly --version` answers the Launcher's own query form, before any profile exists.
 if [ "$#" -eq 1 ] && { [ "$1" = "--version" ] || [ "$1" = "-V" ]; }; then
   exec "$real_bin" --launch-profile nightly-v1 --profile-root "$profile_root" "$1"

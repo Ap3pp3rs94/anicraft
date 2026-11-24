@@ -45,9 +45,10 @@ function Get-NightlySourceState([string] $RepositoryRoot) {
 }
 
 function Assert-NightlyFlavor([string] $ProductName, [string] $VersionOutput, [string] $ExpectedVersion) {
-  # The line the flavor prints: platform::name_for(NightlyV1), the build channel and the prepared
-  # version (src/main.rs, src/build_flavor.rs).
-  if ($ProductName -ne 'AniCraft Nightly' -or $VersionOutput -cne "AniCraft Nightly $ExpectedVersion (nightly-v1)") {
+  # The line the flavor prints: the contract's `<App> <version> (nightly-v1)` (src/main.rs,
+  # src/build_flavor.rs), which the Launcher and the shared producer parse. The product name, a
+  # separate resource field, is `AniCraft Nightly`.
+  if ($ProductName -ne 'AniCraft Nightly' -or $VersionOutput -cne "AniCraft $ExpectedVersion (nightly-v1)") {
     throw 'the executable is not the compiled nightly-v1 flavor'
   }
 }

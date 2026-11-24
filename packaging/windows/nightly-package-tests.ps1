@@ -15,8 +15,8 @@ foreach ($bad in @('', '0.3.0', '../other', '0.23.1/elsewhere')) {
   try { Get-NightlyArchiveSpec $bad 'x64' | Out-Null } catch { $refused = $true }
   Assert $refused 'unsafe artifact version was accepted'
 }
-Assert-NightlyFlavor 'AniCraft Nightly' 'AniCraft Nightly 0.3.0-nightly.20261120.17.1.gabcdef012345 (nightly-v1)' '0.3.0-nightly.20261120.17.1.gabcdef012345'
-foreach ($pair in @(@('AniCraft', 'AniCraft Nightly 0.23.1 (nightly-v1)'), @('AniCraft Nightly', 'AniCraft 0.23.1'), @('AniCraft Nightly', 'AniCraft 0.23.1 (nightly-v1)'))) {
+Assert-NightlyFlavor 'AniCraft Nightly' 'AniCraft 0.3.0-nightly.20261120.17.1.gabcdef012345 (nightly-v1)' '0.3.0-nightly.20261120.17.1.gabcdef012345'
+foreach ($pair in @(@('AniCraft', 'AniCraft 0.23.1 (nightly-v1)'), @('AniCraft Nightly', 'AniCraft 0.23.1'), @('AniCraft Nightly', 'AniCraft Nightly 0.23.1 (nightly-v1)'))) {
   $refused = $false
   try { Assert-NightlyFlavor $pair[0] $pair[1] '0.3.0-nightly.20261120.17.1.gabcdef012345' } catch { $refused = $true }
   Assert $refused 'stable or mismatched build flavor was accepted'

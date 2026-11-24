@@ -10,10 +10,10 @@ release branch, no signing); this page describes what exists and how to exercise
 |---|---|
 | Build switch | `ANICRAFT_BUILD_CHANNEL=nightly-v1` makes `build.rs` emit `cfg(anicraft_nightly_v1)`. Unset, empty or `stable` is stable; anything else is a build error. |
 | Version | `ANICRAFT_VERSION=X.Y.Z-nightly.YYYYMMDD.<run>.<attempt>.g<sha12>`, with `ANICRAFT_BUILD_SHA` (40 hex) and `ANICRAFT_BUILD_DATE` (`YYYY-MM-DD`) that must match it. A nightly build without them fails in `build.rs`. |
-| Version query | `--version`, `-V`, and the Launcher's `--launch-profile nightly-v1 --profile-root <abs> --version` print exactly `AniCraft Nightly <version> (nightly-v1)` on stdout, nothing on stderr, exit 0 — before logging, the profile check, IPC or any window. |
+| Version query | `--version`, `-V`, and the Launcher's `--launch-profile nightly-v1 --profile-root <abs> --version` print exactly `AniCraft <version> (nightly-v1)` on stdout, nothing on stderr, exit 0 — before logging, the profile check, IPC or any window. `AniCraft Nightly` is the display name (window title, Windows ProductName, desktop `Name=`), never part of this line. |
 | Launch | `--launch-profile nightly-v1 --profile-root <abs> -- [files…]`, as separate tokens. A nightly build without a profile is refused in a native dialog ("Open AniCraft Nightly from ArtCraft Launcher"); a stable build refuses the profile. |
 | Identities | Package, macOS bundle and Launcher: `ai.storyteller.anicraft.nightly`. Window/Wayland app id and Windows AUMID: `ai.storyteller.anicraft.nightly-v1`. Two different strings; `src/platform.rs` keeps both. |
-| Assets | `anicraft-<v>-windows-x86_64-nightly.unsigned.zip` (the compiler's intermediate), `anicraft-<v>-linux-x86_64-nightly.tar.gz` (the GUI, its launcher, the icon and the notices), `anicraft-<v>-macos-aarch64-nightly.zip` holding `AniCraft Nightly.app`. GUI only: no `anicraft-cli`, portable marker, `.desktop`, DMG, associations or URL types. |
+| Assets | `anicraft-<v>-windows-x86_64-nightly.unsigned.zip` (the compiler's intermediate), `anicraft-<v>-linux-x86_64-nightly.tar.gz` (`anicraft` the launcher, `anicraft-bin` the GUI, the icon and the notices), `anicraft-<v>-macos-aarch64-nightly.zip` holding `AniCraft Nightly.app`. GUI only: no `anicraft-cli`, portable marker, `.desktop`, DMG, associations or URL types. |
 
 ## Data
 
@@ -89,14 +89,18 @@ exec <real-program> --launch-profile nightly-v1 --profile-root "${XDG_DATA_HOME:
 | `.deb` / `.rpm` | `/usr/bin/anicraft-nightly` | `/usr/lib/anicraft-nightly/anicraft` |
 | AppImage | `$APPDIR/AppRun` (a script, not a symlink) | `$APPDIR/usr/bin/anicraft` |
 | Arch handoff | `bin/anicraft` (shipped) | `bin/.anicraft-nightly/anicraft` |
-| Flatpak | `/app/bin/anicraft-nightly` (the bundle's `command:`) | `/app/bin/anicraft` |
-| nightly `.tar.gz` | `anicraft-nightly` | `anicraft` beside it |
+| Flatpak | `/app/bin/anicraft-nightly` (the bundle's `command:`) | `/app/bin/anicraft-bin` |
+| nightly `.tar.gz` | `anicraft` (the standard layout: the launcher keeps the app's name) | `anicraft-bin` beside it |
 
 The profile is a sibling of stable's data folder, never inside it and never containing it, and
-`anicraft-nightly --version` answers the Launcher's own query form. A package whose launcher cannot
-put arguments in front of the person's own may name the root in `ANICRAFT_PROFILE_ROOT` instead;
-only a nightly build reads it, it is validated exactly like the Launcher's root, and it may not be
-combined with `--launch-profile`/`--profile-root`.
+`anicraft --version` from the tar (or `anicraft-nightly --version` from a package) answers the
+Launcher's own query form. A command line that already carries `--launch-profile` goes straight to
+the program instead of being wrapped twice, and only the deb/rpm layout looks in
+`/usr/lib/anicraft-nightly`; a bundle never trusts a folder beside its mount. A package whose
+launcher cannot put arguments in front of the person's own may name the root in
+`ANICRAFT_PROFILE_ROOT` instead; nothing here uses it, only a nightly build reads it, it is
+validated exactly like the Launcher's root, and it may not be combined with
+`--launch-profile`/`--profile-root`.
 
 ## Callers and policy
 

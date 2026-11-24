@@ -25,16 +25,18 @@ nightly_refuse_signing_env
 nightly_build_gui
 STAGE="$NIGHTLY_WORK/stage"
 mkdir -p "$STAGE"
-install -m755 "$NIGHTLY_GUI" "$STAGE/anicraft"
-"${CROSS_COMPILE:-}strip" "$STAGE/anicraft" 2>/dev/null || true
-# The same launcher the deb/rpm, AppImage, Arch and Flatpak nightly formats install: an extracted
-# tar starts through it, so its settings stay in its own profile instead of stable's folder.
-install -m755 "$ROOT/packaging/linux/nightly-launch.sh" "$STAGE/anicraft-nightly"
+# The standard Nightly tar layout: `anicraft` is the launcher (the app's own name) and
+# `anicraft-bin` the GUI it starts, so an extracted tar is isolated exactly as the packages are and
+# the shared smoke can query the entry point by the app's name.
+install -m755 "$NIGHTLY_GUI" "$STAGE/anicraft-bin"
+"${CROSS_COMPILE:-}strip" "$STAGE/anicraft-bin" 2>/dev/null || true
+# The same launcher the deb/rpm, AppImage, Arch and Flatpak nightly formats install.
+install -m755 "$ROOT/packaging/linux/nightly-launch.sh" "$STAGE/anicraft"
 cp "$ROOT/assets/app-icon/anicraft-nightly.png" "$STAGE/anicraft-nightly.png"
 nightly_copy_notices "$STAGE"
 # The staged launcher answers the Launcher's version query from the staged binary, exactly as an
 # extracted copy does (no profile is created by a query).
-[[ "$("$STAGE/anicraft-nightly" --version)" == "AniCraft Nightly $VERSION (nightly-v1)" ]] ||
+[[ "$("$STAGE/anicraft" --version)" == "AniCraft $VERSION (nightly-v1)" ]] ||
   nightly_die 'the archive launcher does not answer the prepared nightly version'
 # The private mktemp cwd is the helper authority root, not a CLI path parent.
 (cd "$NIGHTLY_WORK" && python3 "$ROOT/packaging/nightly-archive.py" linux stage archive.tar.gz)

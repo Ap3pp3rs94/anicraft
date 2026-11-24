@@ -33,7 +33,7 @@ def checked_entries(root, stage):
     total = 0
     for entry in entries:
         name = entry.name
-        if name not in {"anicraft", "anicraft-nightly", "anicraft-nightly.png"} and not notice(name):
+        if name not in {"anicraft", "anicraft-bin", "anicraft-nightly.png"} and not notice(name):
             raise ValueError(f"unexpected nightly member: {name}")
         if len(name.encode("utf-8")) > 100:
             raise ValueError(f"nightly member must be a short regular file: {name}")
@@ -46,7 +46,7 @@ def checked_entries(root, stage):
         folded.add(name.casefold())
     required = {
         "anicraft",
-        "anicraft-nightly",
+        "anicraft-bin",
         "anicraft-nightly.png",
         "README.md",
         "LICENSE-MIT",

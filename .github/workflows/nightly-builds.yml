@@ -123,7 +123,7 @@ jobs:
           } finally { $archive.Dispose() }
           $stage = Join-Path $env:RUNNER_TEMP 'nightly-targets\windows-package\nightly-v1-x86_64\anicraft.exe'
           $plain = (& $stage --version | Out-String).Trim()
-          if ($plain -cne "AniCraft Nightly $env:ANICRAFT_VERSION (nightly-v1)") { throw "the version query reports '$plain'" }
+          if ($plain -cne "AniCraft $env:ANICRAFT_VERSION (nightly-v1)") { throw "the version query reports '$plain'" }
           $launcher = (& $stage --launch-profile nightly-v1 --profile-root (Join-Path $env:RUNNER_TEMP 'profile') --version | Out-String).Trim()
           if ($launcher -cne $plain) { throw "the Launcher's query reports '$launcher', not '$plain'" }
       - name: Keep the unsigned ZIP
@@ -188,18 +188,24 @@ jobs:
           out="$RUNNER_TEMP/unpacked"
           mkdir -p "$out"
           tar -xzf "$tar" -C "$out"
+          # The standard layout: `anicraft` is the launcher and `anicraft-bin` the GUI it starts.
           test -x "$out/anicraft"
-          test -x "$out/anicraft-nightly"
+          test -x "$out/anicraft-bin"
           test -f "$out/anicraft-nightly.png"
           for notice in README.md LICENSE-MIT LICENSE-APACHE NOTICE ATTRIBUTION.md; do test -f "$out/$notice"; done
           test "$(ls "$out" | wc -l)" -le 12
-          expected="AniCraft Nightly $ANICRAFT_VERSION (nightly-v1)"
+          head -c 4 "$out/anicraft-bin" | od -An -tx1 | tr -d ' \n' | grep -qx 7f454c46
+          expected="AniCraft $ANICRAFT_VERSION (nightly-v1)"
+          # The entry point is the launcher: it starts the GUI in its own profile, before any profile
+          # exists and exactly as every installed format does.
           plain="$("$out/anicraft" --version)"
           test "$plain" = "$expected"
-          # The unpacked launcher starts that binary in its own profile, as every format does.
-          launched="$("$out/anicraft-nightly" --version)"
+          grep -q -- '--launch-profile nightly-v1 --profile-root' "$out/anicraft"
+          profile="$RUNNER_TEMP/does-not-exist/profile"
+          test ! -e "$profile"
+          launched="$("$out/anicraft" --launch-profile nightly-v1 --profile-root "$profile" --version)"
           test "$launched" = "$expected"
-          grep -q -- '--launch-profile nightly-v1 --profile-root' "$out/anicraft-nightly"
+          test ! -e "$profile"
           echo "tar: $plain"
       - name: Keep the unsigned tar
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

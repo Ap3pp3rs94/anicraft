@@ -337,6 +337,14 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Args, String> {
             "--version" | "-V" => out.print = Some(Print::Version),
             "--help" | "-h" => out.print = Some(Print::Help),
             "--check-theme" => out.print = Some(Print::CheckTheme(PathBuf::from(args.next().ok_or("--check-theme needs a theme file")?))), // i18n-exempt: a console message
+            // End of the options: everything after it is a file, even a name that reads like one
+            // of the flags above. A Nightly start arrives that way from the Launcher
+            // (`launch_profile::parse`), so its documents are never taken for flags.
+            "--" => {
+                for rest in args.by_ref() {
+                    out.file = Some(PathBuf::from(rest));
+                }
+            }
             // Not a file: what older macOS added when Finder started an app.
             other if platform::is_system_argument(other) => {}
             other => out.file = Some(PathBuf::from(other)),
@@ -409,7 +417,7 @@ fn prepare_launch() -> Option<Vec<std::ffi::OsString>> {
     // --version`: answered before root validation, process identity, IPC or any window.
     if build_flavor::COMPILED == build_flavor::BuildFlavor::NightlyV1 && (build_flavor::version_query(&argv) || launch_profile::version_query(&argv))
     {
-        let _ = writeln!(std::io::stdout(), "{} {}", platform::name_for(platform::LaunchIdentity::NightlyV1), version_line());
+        let _ = writeln!(std::io::stdout(), "AniCraft {}", version_line());
         return None;
     }
     // Only a nightly build reads the wrapper's root, so a stable copy never sees the variable.
@@ -637,6 +645,16 @@ mod args_tests {
         assert!(parse_args(["--theme".to_string(), "plum".to_string()]).is_err());
         assert_eq!(parse(&["--check-theme", "plum.json"]).print, Some(Print::CheckTheme(PathBuf::from("plum.json"))));
         assert!(parse_args(["--check-theme".to_string()]).is_err());
+        // `--` ends the options: everything after it is a file, even a name that reads like a flag
+        // (the Launcher hands a Nightly start its documents over the same delimiter).
+        assert_eq!((parse(&["--"]).file, parse(&["--"]).print), (None, None));
+        let flag_named_file = parse(&["--", "--version"]);
+        assert_eq!((flag_named_file.file, flag_named_file.print), (Some(PathBuf::from("--version")), None));
+        assert_eq!(parse(&["--", "a.anicraft"]).file, Some(PathBuf::from("a.anicraft")));
+        // Files on both sides of the delimiter open in the order the plain arguments always took:
+        // the last one named is the one that is opened.
+        assert_eq!(parse(&["--", "a.anicraft", "--other.anicraft"]).file, Some(PathBuf::from("--other.anicraft")));
+        assert_eq!(parse(&["--screenshot", "shot.png", "--"]).file, None);
         // `--control <port>` (ADR 0104): a port from 1 to 65535, or an error before any window.
         assert_eq!(parse(&["--control", "9878"]).control, Some(9878));
         for bad in [&["--control"][..], &["--control", "0"], &["--control", "99999"], &["--control", "port"]] {

@@ -8,9 +8,11 @@ use std::sync::OnceLock;
 pub const VERSION: &str = "nightly-v1";
 
 /// Where a distribution wrapper names the profile root when it cannot add arguments in front of
-/// the person's own (the Arch nightly launcher, `packaging/linux/nightly-arch-launch.sh`). Only a
-/// nightly build reads it, it is validated exactly like the Launcher's root, and it may not be
-/// combined with the Launcher's two arguments.
+/// the person's own. Every format this app ships adds the two arguments through
+/// `packaging/linux/nightly-launch.sh` instead, so nothing here uses the variable today; it stays
+/// as the one door for a packager whose launcher can only set an environment, is read only by a
+/// nightly build, is validated exactly like the Launcher's root, and may not be combined with the
+/// Launcher's two arguments.
 pub const ROOT_ENV: &str = "ANICRAFT_PROFILE_ROOT";
 
 #[derive(Clone, Debug, PartialEq, Eq)]

@@ -71,6 +71,7 @@ if [[ "$FLATPAK_ID" != "$APP_ID" ]]; then
       -e "s|<name>AniCraft</name>|<name>AniCraft Nightly</name>|g" \
       -e "s|<launchable type=\"desktop-id\">$APP_ID.desktop</launchable>|<launchable type=\"desktop-id\">$FLATPAK_ID.desktop</launchable>|g" \
       -e "s|<icon type=\"stock\">$APP_ID</icon>|<icon type=\"stock\">$FLATPAK_ID</icon>|g" \
+      -e "s|<binary>anicraft</binary>|<binary>anicraft-nightly</binary>|g" \
       -e '/<mediatype>/d' \
       "$WORK/stage/share/metainfo/$APP_ID.metainfo.xml" >"$WORK/stage/share/metainfo/$FLATPAK_ID.metainfo.xml"
   rm -f "$WORK/stage/share/metainfo/$APP_ID.metainfo.xml"
@@ -86,9 +87,11 @@ if [[ "$FLATPAK_ID" != "$APP_ID" ]]; then
   # The sandbox keeps its own home, but the program still needs the flavor's profile protocol: the
   # bundle runs the same launcher every other format installs (packaging/linux/nightly-launch.sh).
   install -Dm755 "$HERE/nightly-launch.sh" "$WORK/stage/bin/anicraft-nightly"
+  # The sandbox installs the GUI as `anicraft-bin`, the name the launcher looks for: a stable
+  # program called `anicraft` is never a candidate, in the sandbox or anywhere else.
   sed -e "s|ai\.storyteller\.anicraft|$FLATPAK_ID|g" \
       -e "s|^command: anicraft$|command: anicraft-nightly|" \
-      -e "s|^      - install -Dm755 bin/anicraft /app/bin/anicraft$|      - install -Dm755 bin/anicraft /app/bin/anicraft\\n      - install -Dm755 bin/anicraft-nightly /app/bin/anicraft-nightly|" \
+      -e "s|^      - install -Dm755 bin/anicraft /app/bin/anicraft$|      - install -Dm755 bin/anicraft /app/bin/anicraft-bin\\n      - install -Dm755 bin/anicraft-nightly /app/bin/anicraft-nightly|" \
       -e '/install -Dm644 share\/mime\/packages\//d' \
       "$HERE/flatpak/$APP_ID.bundle.yml" >"$WORK/$FLATPAK_ID.yml"
 else
@@ -115,7 +118,15 @@ if [[ "$TEST" = 1 ]]; then
   flatpak install --user -y --noninteractive --reinstall "$OUT"
   flatpak info --user "$FLATPAK_ID"
   flatpak run --command=anicraft-cli "$FLATPAK_ID" --version
-  flatpak run --command=sh "$FLATPAK_ID" -c 'ls /app/share/applications /app/share/metainfo /app/share/mime/packages /app/share/icons/hicolor/*/apps'
+  SHARE_PATHS='/app/share/applications /app/share/metainfo /app/share/icons/hicolor/*/apps'
+  if [[ "$FLATPAK_ID" = "$APP_ID" ]]; then
+    SHARE_PATHS='/app/share/applications /app/share/metainfo /app/share/mime/packages /app/share/icons/hicolor/*/apps'
+  else
+    # Nightly ships no MIME database (its metadata declares no association), so asking for that
+    # folder would end the run under `set -e`; the launcher answers its version query instead.
+    flatpak run --command=anicraft-nightly "$FLATPAK_ID" --version | grep -qxF "AniCraft $VERSION (nightly-v1)"
+  fi
+  flatpak run --command=sh "$FLATPAK_ID" -c "ls $SHARE_PATHS"
 fi
 echo "==> done"
 ls -lh "$OUT"

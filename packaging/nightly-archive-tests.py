@@ -30,8 +30,9 @@ class ArchivePolicy(unittest.TestCase):
         self.stage.mkdir()
         self.output = self.root / "nightly.tar.gz"
         self.required = {
+            # The standard Nightly layout: `anicraft` is the launcher and `anicraft-bin` the GUI.
             "anicraft",
-            "anicraft-nightly",
+            "anicraft-bin",
             "anicraft-nightly.png",
             "README.md",
             "LICENSE-MIT",
@@ -42,6 +43,7 @@ class ArchivePolicy(unittest.TestCase):
         for name in self.required:
             (self.stage / name).write_bytes(b"generated fixture: " + name.encode())
         (self.stage / "anicraft").chmod(0o755)
+        (self.stage / "anicraft-bin").chmod(0o755)
 
     def test_flat_regular_ustar_with_all_notices(self):
         (self.stage / "OFL-Font.txt").write_text("generated fixture license", encoding="utf-8")
@@ -69,7 +71,8 @@ class ArchivePolicy(unittest.TestCase):
                 (self.stage / name).write_bytes(content)
 
     def test_unexpected_cli_portable_or_installer_member_refuses(self):
-        for name in ["anicraft-cli", "portable.txt", "anicraft.desktop", "anicraft-launch", "nightly-launch.sh"]:
+        # The old launcher name is not the layout either: `anicraft` is the launcher now.
+        for name in ["anicraft-cli", "portable.txt", "anicraft.desktop", "anicraft-launch", "nightly-launch.sh", "anicraft-nightly"]:
             with self.subTest(name=name):
                 bad = self.stage / name
                 bad.write_bytes(b"generated fixture")
