@@ -49,13 +49,20 @@ for line in 'Name=AniCraft Nightly' 'Exec=anicraft-nightly %f' 'TryExec=anicraft
   "Icon=$nightly_id" "StartupWMClass=$nightly_id"; do
   grep -qxF "$line" "$apps/$nightly_id.desktop" || { echo "missing desktop line: $line" >&2; exit 1; }
 done
-! grep -q '^MimeType=' "$apps/$nightly_id.desktop"
+# `! grep` is not a condition: errexit skips it, so a match would pass. Fail explicitly.
+if grep -q '^MimeType=' "$apps/$nightly_id.desktop"; then
+  echo 'FAIL: the Nightly desktop entry still declares MimeType' >&2
+  exit 1
+fi
 meta="$pack/share/metainfo/$nightly_id.metainfo.xml"
 [[ -f "$meta" && ! -e "$pack/share/metainfo/ai.storyteller.anicraft.metainfo.xml" ]]
 grep -qF "<id>$nightly_id</id>" "$meta"
 grep -qF '<name>AniCraft Nightly</name>' "$meta"
 grep -qF '<binary>anicraft-nightly</binary>' "$meta"
-! grep -qF '<mediatype>' "$meta"
+if grep -qF '<mediatype>' "$meta"; then
+  echo 'FAIL: the Nightly AppStream file still declares a mediatype' >&2
+  exit 1
+fi
 [[ ! -e "$pack/share/mime" ]]
 [[ -f "$pack/share/icons/hicolor/256x256/apps/$nightly_id.png" ]]
 

@@ -20,7 +20,7 @@ case "$0" in
   *) self=$(command -v -- "$0" 2>/dev/null || printf '%s' "$0") ;;
 esac
 # Physical, so a merged-`/usr` system's `/bin/<launcher>` is still the system install (/usr/bin).
-here=$(CDPATH= cd -P -- "$(dirname -- "$self")" && pwd -P)
+here=$(CDPATH='' cd -P -- "$(dirname -- "$self")" && pwd -P)
 self="$here/$(basename -- "$self")"
 
 # Picks the first candidate that is a regular program of the bundle (never this script itself).

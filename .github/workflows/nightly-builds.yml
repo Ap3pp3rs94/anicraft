@@ -193,7 +193,7 @@ jobs:
           test -x "$out/anicraft-bin"
           test -f "$out/anicraft-nightly.png"
           for notice in README.md LICENSE-MIT LICENSE-APACHE NOTICE ATTRIBUTION.md; do test -f "$out/$notice"; done
-          test "$(ls "$out" | wc -l)" -le 12
+          test "$(find "$out" -mindepth 1 -maxdepth 1 | wc -l)" -le 12
           head -c 4 "$out/anicraft-bin" | od -An -tx1 | tr -d ' \n' | grep -qx 7f454c46
           expected="AniCraft $ANICRAFT_VERSION (nightly-v1)"
           # The entry point is the launcher: it starts the GUI in its own profile, before any profile
