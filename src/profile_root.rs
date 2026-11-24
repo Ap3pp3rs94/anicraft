@@ -114,10 +114,10 @@ fn forbidden_roots(platform: Platform, env: &impl Fn(&str) -> Option<OsString>, 
                 .collect::<Result<Vec<_>, _>>()?;
             // The MSI's default folder (packaging/windows/anicraft.wxs): ProgramFiles64\ArtCraft\
             // AniCraft, which a per-user install makes %LOCALAPPDATA%\Programs\ArtCraft\AniCraft.
-            roots.push(required_base(env, "LOCALAPPDATA")?.join("Programs").join("ArtCraft").join("AniCraft"));
-            for key in ["ProgramW6432", "ProgramFiles", "ProgramFiles(x86)"] {
+            roots.push(required_base(env, "LOCALAPPDATA")?.join("Programs").join("ArtCraft").join("AniCraft")); // i18n-exempt: a path component
+            for key in ["ProgramW6432", "ProgramFiles", "ProgramFiles(x86)"] { // i18n-exempt: environment variable names
                 if let Some(base) = env(key).filter(|v| !v.is_empty()) {
-                    roots.push(absolute(PathBuf::from(base), key)?.join("ArtCraft").join("AniCraft"));
+                    roots.push(absolute(PathBuf::from(base), key)?.join("ArtCraft").join("AniCraft")); // i18n-exempt: a path component
                 }
             }
             roots
@@ -135,14 +135,14 @@ fn forbidden_roots(platform: Platform, env: &impl Fn(&str) -> Option<OsString>, 
         }
         Platform::Mac => {
             let home = required_base(env, "HOME")?;
-            let library = home.join("Library");
+            let library = home.join("Library"); // i18n-exempt: a path component
             vec![
-                library.join("Application Support").join("AniCraft"),
-                library.join("Caches").join("AniCraft"),
-                library.join("Preferences").join("AniCraft"),
-                library.join("Preferences").join("ai.storyteller.anicraft.plist"),
-                library.join("Saved Application State").join("ai.storyteller.anicraft.savedState"),
-                home.join("Applications").join("AniCraft.app"),
+                library.join("Application Support").join("AniCraft"), // i18n-exempt: a path component
+                library.join("Caches").join("AniCraft"), // i18n-exempt: a path component
+                library.join("Preferences").join("AniCraft"), // i18n-exempt: a path component
+                library.join("Preferences").join("ai.storyteller.anicraft.plist"), // i18n-exempt: a path component
+                library.join("Saved Application State").join("ai.storyteller.anicraft.savedState"), // i18n-exempt: a path component
+                home.join("Applications").join("AniCraft.app"), // i18n-exempt: a path component
                 PathBuf::from("/Applications").join("AniCraft.app"),
             ]
         }
@@ -261,7 +261,7 @@ fn validate_for(
     entries_stay_inside(&chosen)?;
     // Recovery can read, adopt, overwrite and sweep entries: never let its alias leave this
     // private profile, including toward a stable portable data folder not in our known roots.
-    private_subdirectory(&chosen, "Recovery", tr!("recovery folder"))?;
+    private_subdirectory(&chosen, "Recovery", tr!("recovery folder"))?; // i18n-exempt: the profile folder name
     let mut create = std::fs::DirBuilder::new();
     create.recursive(true);
     #[cfg(unix)]
@@ -274,7 +274,7 @@ fn validate_for(
     if confirmed != chosen || forbidden.iter().any(|stable| overlaps(&confirmed, stable, platform)) {
         return Err(tr!("the nightly profile changed while it was being validated").into());
     }
-    private_subdirectory(&confirmed, "Recovery", tr!("recovery folder"))?;
+    private_subdirectory(&confirmed, "Recovery", tr!("recovery folder"))?; // i18n-exempt: the profile folder name
     entries_stay_inside(&confirmed)?;
     writable(&confirmed).map_err(|e| tr!("the nightly profile is not writable: {e}", e = e))?;
     Ok(confirmed)

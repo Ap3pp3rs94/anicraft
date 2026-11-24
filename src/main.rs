@@ -417,7 +417,7 @@ fn prepare_launch() -> Option<Vec<std::ffi::OsString>> {
     // --version`: answered before root validation, process identity, IPC or any window.
     if build_flavor::COMPILED == build_flavor::BuildFlavor::NightlyV1 && (build_flavor::version_query(&argv) || launch_profile::version_query(&argv))
     {
-        let _ = writeln!(std::io::stdout(), "AniCraft {}", version_line());
+        let _ = writeln!(std::io::stdout(), "AniCraft {}", version_line()); // i18n-exempt: console text
         return None;
     }
     // Only a nightly build reads the wrapper's root, so a stable copy never sees the variable.

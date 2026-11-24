@@ -34,7 +34,7 @@ pub fn version_query(args: &[OsString]) -> bool {
 pub fn version(flavor: BuildFlavor, stable: &str) -> String {
     match flavor {
         BuildFlavor::Stable => stable.to_owned(),
-        BuildFlavor::NightlyV1 => format!("{stable} (nightly-v1)"),
+        BuildFlavor::NightlyV1 => format!("{stable} (nightly-v1)"), // i18n-exempt: a version suffix, not prose
     }
 }
 
