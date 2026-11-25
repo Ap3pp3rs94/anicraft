@@ -120,7 +120,8 @@ pub fn version_query(args: &[OsString]) -> bool {
 /// [`parse`], plus the wrapper's root for a distribution package that cannot add arguments. A
 /// build passes `wrapper_root` only for the nightly channel, so a stable build never sees it.
 pub fn parse_startup(args: Vec<OsString>, wrapper_root: Option<OsString>) -> Result<Launch, String> {
-    let launcher_form = args.iter().any(|a| {
+    // Only the tokens before `--`: after it everything is a file name, even `--profile-root`.
+    let launcher_form = args.iter().take_while(|a| *a != "--").any(|a| {
         a == "--launch-profile"
             || a == "--profile-root"
             || a.to_string_lossy().starts_with("--launch-profile=")
@@ -240,6 +241,9 @@ mod tests {
         assert_eq!(launch.args, args(&["walk cycle.anicraft"]));
         // An empty value is no value, as a shell's `VAR=` sets it.
         assert_eq!(parse_startup(args(&[]), Some(OsString::new())).unwrap().profile, Profile::Stable);
+        // After `--` every token is a file name, so a file called `--profile-root` is not the Launcher's.
+        let after_delimiter = parse_startup(args(&["--", "--profile-root"]), Some(absolute().into())).unwrap();
+        assert_eq!((after_delimiter.profile, after_delimiter.args), (Profile::NightlyV1(PathBuf::from(absolute())), args(&["--", "--profile-root"])));
         // Both at once is ambiguous about which root the window would use, so neither is used.
         assert!(parse_startup(nightly(), Some(absolute().into())).is_err());
         assert!(parse_startup(args(&[]), Some("relative".into())).is_err());

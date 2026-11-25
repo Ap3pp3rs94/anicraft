@@ -53,7 +53,13 @@ if [ -z "$real_bin" ]; then
   exit 2
 fi
 
-profile_root="${XDG_DATA_HOME:-${HOME:?HOME is required to place the AniCraft Nightly profile}/.local/share}/anicraft-nightly/profile"
+# A relative XDG_DATA_HOME is ignored, as the XDG spec and the app's own data_home_for do: the
+# profile root must be absolute, so a relative one would only make the program refuse to start.
+case "${XDG_DATA_HOME:-}" in
+  /*) data_home=$XDG_DATA_HOME ;;
+  *) data_home="${HOME:?HOME is required to place the AniCraft Nightly profile}/.local/share" ;;
+esac
+profile_root="$data_home/anicraft-nightly/profile"
 
 # The Launcher already speaks this protocol: pass it through rather than wrap it a second time.
 case "${1:-}" in

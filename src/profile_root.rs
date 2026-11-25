@@ -160,17 +160,29 @@ fn private_subdirectory(root: &Path, name: impl AsRef<Path>, label: &str) -> Res
     Ok(child)
 }
 
-/// Every existing entry directly in the profile (prefs, logs, plug-ins and so on) must resolve
-/// inside it, so a link there cannot point Nightly's writes at another app's data.
+/// Every existing entry in the profile, at any depth (prefs, logs, plug-ins, a template category
+/// and so on), must resolve inside it, so a link there cannot point Nightly's reads, writes and
+/// deletes at another app's data. Links are checked and never followed, so a link cycle cannot
+/// loop; a folder that is really inside is walked once, by its own path.
 fn entries_stay_inside(root: &Path) -> Result<(), String> {
-    let entries = match std::fs::read_dir(root) {
-        Ok(entries) => entries,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => return Err(tr!("cannot inspect the nightly profile: {e}", e = error)),
-    };
-    for entry in entries {
-        let entry = entry.map_err(|e| tr!("cannot inspect the nightly profile: {e}", e = e))?;
-        private_subdirectory(root, entry.file_name(), tr!("profile entry"))?;
+    let mut folders = vec![root.to_path_buf()];
+    while let Some(folder) = folders.pop() {
+        let entries = match std::fs::read_dir(&folder) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound && folder.as_path() == root => return Ok(()),
+            Err(error) => return Err(tr!("cannot inspect the nightly profile: {e}", e = error)),
+        };
+        for entry in entries {
+            let entry = entry.map_err(|e| tr!("cannot inspect the nightly profile: {e}", e = e))?;
+            let kind = entry.file_type().map_err(|e| tr!("cannot inspect the nightly profile: {e}", e = e))?;
+            if kind.is_symlink() || folder.as_path() == root {
+                let relative = entry.path().strip_prefix(root).map(Path::to_path_buf).unwrap_or_else(|_| entry.file_name().into());
+                private_subdirectory(root, relative, tr!("profile entry"))?;
+            }
+            if kind.is_dir() {
+                folders.push(entry.path());
+            }
+        }
     }
     Ok(())
 }
@@ -571,6 +583,31 @@ mod tests {
             assert!(result.is_err(), "{name} must not lead outside the profile");
             assert!(!probed.get());
         }
+        // A link one level down is as dangerous as one in the profile's own folder: Templates is a
+        // real folder here, but its category leads into the stable app's templates.
+        let private = fixture.root.join("nightly-nested");
+        std::fs::create_dir_all(private.join("Templates")).unwrap();
+        std::os::unix::fs::symlink(&stable, private.join("Templates").join("Characters")).unwrap();
+        let probed = std::cell::Cell::new(false);
+        let result = validate_for(
+            Platform::Linux,
+            &private,
+            |key| fixture.get(key),
+            Some(&fixture.exe),
+            |_| {
+                probed.set(true);
+                Ok(())
+            },
+        );
+        assert!(result.is_err(), "a nested link must not lead outside the profile");
+        assert!(!probed.get());
+        let private = fixture.root.join("nightly-nested-inside");
+        std::fs::create_dir_all(private.join("Templates/real")).unwrap();
+        std::os::unix::fs::symlink(private.join("Templates/real"), private.join("Templates/Characters")).unwrap();
+        std::os::unix::fs::symlink(&private, private.join("Templates/real/loop")).unwrap();
+        assert!(fixture.check(Platform::Linux, &private).is_err(), "a link back to the profile's own folder is refused, not looped on");
+        std::fs::remove_file(private.join("Templates/real/loop")).unwrap();
+        assert!(fixture.check(Platform::Linux, &private).is_ok(), "a nested link that stays inside is fine");
         let private = fixture.root.join("nightly-inside");
         std::fs::create_dir_all(private.join("real-templates")).unwrap();
         std::fs::write(private.join("prefs.json"), b"{}").unwrap();

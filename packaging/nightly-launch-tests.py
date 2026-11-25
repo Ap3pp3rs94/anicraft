@@ -140,6 +140,12 @@ class Layout(unittest.TestCase):
                 result = self.run_launcher(command, "walk.anicraft", env={"XDG_DATA_HOME": str(data_home)})
                 self.assertEqual(self.arguments(result), self.protocol("walk.anicraft", data_home=data_home))
 
+    def test_a_relative_xdg_data_home_is_ignored(self):
+        for name, (command, _) in self.layouts().items():
+            with self.subTest(layout=name):
+                result = self.run_launcher(command, "walk.anicraft", env={"XDG_DATA_HOME": "relative/share"})
+                self.assertEqual(self.arguments(result), self.protocol("walk.anicraft"))
+
     def test_a_version_query_answers_the_launchers_own_form(self):
         for name, (command, _) in self.layouts().items():
             for flag in ("--version", "-V"):

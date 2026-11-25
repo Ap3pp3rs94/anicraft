@@ -222,7 +222,11 @@ fn run(attempt: startup::Attempt, file: Option<&Path>, shot: Option<PathBuf>, op
             // said once, in the status bar, as the recovery notes are.
             if nightly.previous_unclean {
                 a.status_err(tr!("The previous AniCraft Nightly session did not finish normally. The start-up log in Preferences › About says what it did last; no report has been sent."));
-                nightly.notice_shown.store(true, std::sync::atomic::Ordering::Relaxed);
+                // The status bar holds one line, and a document's own report below replaces this one
+                // before the first frame: only a start with nothing to add counts as having said it.
+                if matches!(report, Opened::Quiet) {
+                    nightly.notice_shown.store(true, std::sync::atomic::Ordering::Relaxed);
+                }
             } else if nightly.health_warning {
                 a.status_err(tr!(
                     "AniCraft Nightly could not record its session health in its profile. You can still edit, but an abnormal exit is not noticed."
@@ -479,10 +483,21 @@ fn main() -> eframe::Result {
     // A file name that is not Unicode cannot be opened; it is said rather than dropped silently
     // (the launcher's arguments themselves were read as bytes in `prepare_launch`).
     let mut words = Vec::with_capacity(arguments.len());
+    let mut after_delimiter = false;
     for argument in arguments {
         match argument.into_string() {
-            Ok(word) => words.push(word),
-            Err(what) => eprintln!("AniCraft could not read a file name on the command line: {what:?}"), // i18n-exempt: a console message
+            Ok(word) => {
+                after_delimiter |= word == "--";
+                words.push(word);
+            }
+            // After `--` every word is a file: one that is not Unicode is said and skipped.
+            Err(what) if after_delimiter => eprintln!("AniCraft could not read a file name on the command line: {what:?}"), // i18n-exempt: a console message
+            // Before it the word could be an option or its value: dropping it would hand the next
+            // word to the wrong option (a file name read as `--screenshot`'s output, say).
+            Err(what) => {
+                eprintln!("AniCraft cannot read an option or its value that is not Unicode: {what:?}"); // i18n-exempt: a console message
+                std::process::exit(2);
+            }
         }
     }
     let args = match parse_args(words) {
@@ -554,6 +569,8 @@ fn main() -> eframe::Result {
     let mut why = String::from("no attempt"); // i18n-exempt: log text
     // Once, and again each time the window closed to reopen another way.
     let mut opening = true;
+    // Set when a window that had drawn then unwound with a panic: the next start reports it.
+    let mut ended_in_panic = false;
     // What the command line asks for is tried first, until a session loses its device on it.
     let mut forced = platform::forced_backend(renderer.as_deref());
     let result: eframe::Result = 'attempts: {
@@ -562,6 +579,7 @@ fn main() -> eframe::Result {
             let attempts = startup::plan(forced, prefs::Prefs::load().window_backend, &platform::window_attempts(platform::OS), &last);
             for (n, attempt) in attempts.iter().enumerate() {
                 startup::trying(attempt, n + 1, attempts.len());
+                let mut unwound = false;
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(*attempt, file.as_deref(), shot.clone(), open.clone(), look.clone(), control, nightly.clone())));
                 why = match result {
                     Ok(Ok(())) => {
@@ -583,7 +601,10 @@ fn main() -> eframe::Result {
                         break 'attempts Ok(());
                     }
                 Ok(Err(e)) => e.to_string(),
-                Err(p) => format!("{} panicked: {}", attempt.label(), startup::panic_text(p.as_ref())), // i18n-exempt: a log line
+                Err(p) => {
+                    unwound = true;
+                    format!("{} panicked: {}", attempt.label(), startup::panic_text(p.as_ref())) // i18n-exempt: a log line
+                }
             };
             startup::line(&format!("{} failed: {why}", attempt.label()));
             // It ran and then stopped: not a start-up problem, and opening a second window would
@@ -593,6 +614,7 @@ fn main() -> eframe::Result {
                 if startup::is_graphics_failure(&why) {
                     startup::lost_mid_session();
                 }
+                ended_in_panic = unwound;
                 break 'attempts Err(eframe::Error::AppCreation(why.into()));
             }
             // It never came up: the next starts try it last, as one that died in a driver.
@@ -606,7 +628,11 @@ fn main() -> eframe::Result {
     // (and so before any notice) has not shown an earlier interruption: the record stays, so the
     // retry or the next start still reports it. On macOS a window that was created has already
     // finished in its exit hook, so this is a no-op there.
-    nightly_session::finish_once(&nightly_session, notice_shown.load(std::sync::atomic::Ordering::Relaxed));
+    // A window that drew and then panicked is not a controlled return: the record stays so the next
+    // start reports the interruption (a panic before the first frame was retried or reported above).
+    if !ended_in_panic {
+        nightly_session::finish_once(&nightly_session, notice_shown.load(std::sync::atomic::Ordering::Relaxed));
+    }
     result
 }
 

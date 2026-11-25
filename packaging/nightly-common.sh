@@ -43,7 +43,11 @@ nightly_init() {
 # nightly archive has no anicraft-cli.
 nightly_compile_gui() {
   (cd "$ROOT" && cargo build --release --locked -p anicraft --target "$NIGHTLY_RUST_TARGET")
-  NIGHTLY_GUI="$CARGO_TARGET_DIR/$NIGHTLY_RUST_TARGET/release/anicraft$([[ "$NIGHTLY_RUST_TARGET" == *windows* ]] && printf '.exe')"
+  # Not `$(... && printf)`: its status 1 on a non-Windows target would end the build under set -e.
+  NIGHTLY_GUI="$CARGO_TARGET_DIR/$NIGHTLY_RUST_TARGET/release/anicraft"
+  if [[ "$NIGHTLY_RUST_TARGET" == *windows* ]]; then
+    NIGHTLY_GUI+=".exe"
+  fi
   [[ -f "$NIGHTLY_GUI" && ! -L "$NIGHTLY_GUI" ]] || nightly_die 'the owned GUI build did not produce a regular executable'
   [[ "$(git -C "$ROOT" rev-parse HEAD)" == "$ANICRAFT_BUILD_SHA" && -z "$(git -C "$ROOT" status --porcelain)" ]] || nightly_die 'source changed during the build'
 }
