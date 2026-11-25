@@ -128,7 +128,7 @@ pub fn parse_startup(args: Vec<OsString>, wrapper_root: Option<OsString>) -> Res
     });
     let wrapper = wrapper_root.filter(|v| !v.is_empty());
     match (launcher_form, wrapper) {
-        (true, Some(_)) => Err(tr!("nightly-v1 takes its profile from the Launcher or {name}, not both", name = ROOT_ENV).into()),
+        (true, Some(_)) => Err(tr!("nightly-v1 takes its profile from the Launcher or {name}, not both", name = ROOT_ENV)),
         (true, None) => parse(args),
         (false, Some(root)) => Ok(Launch { profile: Profile::NightlyV1(nightly_root(&root)?), args }),
         // Stable's argument order and parser remain unchanged.

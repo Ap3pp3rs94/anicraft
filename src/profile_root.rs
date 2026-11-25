@@ -41,7 +41,7 @@ impl Platform {
 
 fn absolute(path: PathBuf, label: &str) -> Result<PathBuf, String> {
     if !path.is_absolute() || path.components().any(|c| matches!(c, Component::ParentDir)) {
-        return Err(tr!("{label} must be absolute and contain no parent traversal", label = label).into());
+        return Err(tr!("{label} must be absolute and contain no parent traversal", label = label));
     }
     Ok(path)
 }
@@ -70,7 +70,7 @@ fn canonical_future(path: &Path) -> Result<PathBuf, String> {
                 missing.push(parent.file_name().ok_or_else(|| tr!("the profile root has no existing ancestor"))?.to_os_string());
                 parent = parent.parent().ok_or_else(|| tr!("the profile root has no existing ancestor"))?;
             }
-            Err(error) => return Err(tr!("cannot inspect the profile boundary: {e}", e = error).into()),
+            Err(error) => return Err(tr!("cannot inspect the profile boundary: {e}", e = error)),
         }
     }
     let mut resolved = std::fs::canonicalize(parent).map_err(|e| tr!("cannot resolve the profile boundary: {e}", e = e))?;
@@ -155,7 +155,7 @@ fn private_subdirectory(root: &Path, name: impl AsRef<Path>, label: &str) -> Res
     let chosen = canonical_future(&absolute(root.to_path_buf(), tr!("the nightly profile root"))?)?;
     let child = canonical_future(&chosen.join(name))?;
     if child == chosen || !child.starts_with(&chosen) {
-        return Err(tr!("the nightly {label} must stay inside its selected profile", label = label).into());
+        return Err(tr!("the nightly {label} must stay inside its selected profile", label = label));
     }
     Ok(child)
 }
@@ -166,7 +166,7 @@ fn entries_stay_inside(root: &Path) -> Result<(), String> {
     let entries = match std::fs::read_dir(root) {
         Ok(entries) => entries,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => return Err(tr!("cannot inspect the nightly profile: {e}", e = error).into()),
+        Err(error) => return Err(tr!("cannot inspect the nightly profile: {e}", e = error)),
     };
     for entry in entries {
         let entry = entry.map_err(|e| tr!("cannot inspect the nightly profile: {e}", e = e))?;
@@ -233,7 +233,7 @@ fn validate_for(
     absolute(root.to_path_buf(), tr!("the nightly profile root"))?;
     for key in FOLDER_ENV {
         if env(key).is_some_and(|v| !v.is_empty()) {
-            return Err(tr!("nightly-v1 cannot be combined with {name}", name = key).into());
+            return Err(tr!("nightly-v1 cannot be combined with {name}", name = key));
         }
     }
     let chosen = canonical_future(root)?;
